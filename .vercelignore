@@ -1,0 +1,17 @@
+node_modules
+.next
+data
+out
+*.sqlite*
+*.sqlite-wal
+*.sqlite-shm
+.env*
+.DS_Store
+*.log
+shots
+tests
+.freebuff
+.big.log
+.run.log
+.wf.html
+.vercel
