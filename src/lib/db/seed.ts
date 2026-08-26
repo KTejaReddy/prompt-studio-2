@@ -1,4 +1,5 @@
-import type { DatabaseSync } from "node:sqlite";
+import type { Client } from "@libsql/client";
+import { SCHEMA_SQL } from "./schema";
 import type { PromptRecord } from "@/lib/types";
 import { SEED_CATEGORIES } from "../seed/taxonomy";
 import { SEED_PLATFORMS } from "../seed/platforms";
@@ -29,10 +30,8 @@ const ALL_SEED_PROMPTS: SeedPrompt[] = [
 function genTarget(): number {
   const raw = Number(process.env.PROMPTLY_GEN_TARGET);
   if (Number.isFinite(raw) && raw >= 0) return Math.floor(raw);
-  return 220_000; // ~2.2 lakh generated + curated on top
+  return 220_000;
 }
-
-const BATCH = 5_000;
 
 function daysAgoIso(days: number): string {
   return new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
@@ -40,7 +39,6 @@ function daysAgoIso(days: number): string {
 
 function seedPromptToRecord(s: SeedPrompt): PromptRecord {
   const created = daysAgoIso(s.ageDays);
-  // Deterministic pseudo-quality from rating + usage so ranking feels real.
   const quality = Math.min(0.99, 0.55 + (s.rating / 5) * 0.35 + Math.min(s.usageCount, 6000) / 60000);
   return {
     id: s.id,
@@ -82,15 +80,11 @@ const PROMPT_COLS = [
   "updated_at", "search_text",
 ] as const;
 
-/** One prepared statement reused for every row — the key to fast bulk inserts. */
-function makePromptInserter(db: DatabaseSync) {
-  const insertPrompt = db.prepare(
-    `INSERT INTO prompts (${PROMPT_COLS.join(",")}) VALUES (${PROMPT_COLS.map(() => "?").join(",")})`,
-  );
-  // Paired FTS write — valid because seeding drops the sync triggers first.
-  const insertFts = db.prepare(`INSERT INTO prompts_fts (id, text) VALUES (?, ?)`);
-  return (p: PromptRecord, searchText: string) => {
-    insertPrompt.run(
+/** Insert one prompt via the libSQL client. */
+async function insertPrompt(client: Client, p: PromptRecord, searchText: string): Promise<void> {
+  await client.execute({
+    sql: `INSERT INTO prompts (${PROMPT_COLS.join(",")}) VALUES (${PROMPT_COLS.map(() => "?").join(",")})`,
+    args: [
       p.id, p.title, p.description, p.category, p.subcategory,
       JSON.stringify(p.tasks), JSON.stringify(p.tags), p.difficulty,
       p.promptText, JSON.stringify(p.variables), p.inputType, p.outputType,
@@ -99,111 +93,152 @@ function makePromptInserter(db: DatabaseSync) {
       p.qualityScore, p.usageCount, p.rating, p.ratingCount, p.author,
       p.status, p.source, p.isFeatured ? 1 : 0, p.createdAt, p.updatedAt,
       searchText,
-    );
-      insertFts.run(p.id, searchText);
-  };
+    ],
+  });
 }
 
-const FTS_TRIGGERS_SQL = `
-CREATE TRIGGER IF NOT EXISTS prompts_fts_insert AFTER INSERT ON prompts BEGIN
-  INSERT INTO prompts_fts (id, text) VALUES (new.id, new.search_text);
-END;
-CREATE TRIGGER IF NOT EXISTS prompts_fts_delete AFTER DELETE ON prompts BEGIN
-  DELETE FROM prompts_fts WHERE id = old.id;
-END;
-CREATE TRIGGER IF NOT EXISTS prompts_fts_update AFTER UPDATE OF search_text ON prompts BEGIN
-  UPDATE prompts_fts SET text = new.search_text WHERE id = new.id;
-END;
-`;
-
-export function seedDatabase(db: DatabaseSync): void {
-  // Bulk-load mode: manual paired FTS writes instead of per-row triggers.
-  db.exec(
-    `DROP TRIGGER IF EXISTS prompts_fts_insert;
-     DROP TRIGGER IF EXISTS prompts_fts_delete;
-     DROP TRIGGER IF EXISTS prompts_fts_update;`,
-  );
-
-  const insertCat = db.prepare(
-    `INSERT INTO categories (id, name, icon, color, sort) VALUES (?,?,?,?,?)`,
-  );
-  const insertSub = db.prepare(
-    `INSERT INTO subcategories (id, category_id, name) VALUES (?,?,?)`,
-  );
-  SEED_CATEGORIES.forEach((c, i) => {
-    insertCat.run(c.id, c.name, c.icon, c.color, i);
-    c.subcategories.forEach((name) => {
-      insertSub.run(name.toLowerCase().replace(/[^a-z0-9]+/g, "-"), c.id, name);
-    });
+/** Insert one prompt into FTS index. */
+async function insertFts(client: Client, id: string, text: string): Promise<void> {
+  await client.execute({
+    sql: "INSERT INTO prompts_fts (id, text) VALUES (?, ?)",
+    args: [id, text],
   });
+}
 
-  const insertPlatform = db.prepare(
-    `INSERT INTO platforms (id, name, color, note, sort) VALUES (?,?,?,?,?)`,
-  );
-  SEED_PLATFORMS.forEach((p, i) => insertPlatform.run(p.id, p.name, p.color, p.note, i));
+/**
+ * Seed the database via Turso/libSQL client.
+ * Uses batched inserts for performance — each batch is ~500 prompts.
+ */
+export async function seedDatabase(client: Client): Promise<void> {
+  // Ensure schema exists
+  const stmts = SCHEMA_SQL.split(";")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0)
+    .map((s) => ({ sql: s + ";" }));
+  await client.batch(stmts);
 
-  const insertCommand = db.prepare(
-    `INSERT INTO commands (cmd, label, description, intent_patch) VALUES (?,?,?,?)`,
-  );
-  for (const c of SEED_COMMANDS) {
-    insertCommand.run(c.cmd, c.label, c.description, JSON.stringify(c.intentPatch));
+  // Seed categories
+  const catStmts = SEED_CATEGORIES.flatMap((c, i) => [
+    {
+      sql: "INSERT OR IGNORE INTO categories (id, name, icon, color, sort) VALUES (?,?,?,?,?)",
+      args: [c.id, c.name, c.icon, c.color, i] as (string | number | null)[],
+    },
+    ...c.subcategories.map((name) => ({
+      sql: "INSERT OR IGNORE INTO subcategories (id, category_id, name) VALUES (?,?,?)",
+      args: [name.toLowerCase().replace(/[^a-z0-9]+/g, "-"), c.id, name] as (string | number | null)[],
+    })),
+  ]);
+  await client.batch(catStmts);
+
+  // Seed platforms
+  const platStmts = SEED_PLATFORMS.map((p, i) => ({
+    sql: "INSERT OR IGNORE INTO platforms (id, name, color, note, sort) VALUES (?,?,?,?,?)",      args: [p.id, p.name, p.color, p.note, i] as (string | number | null)[],
+  }));
+  await client.batch(platStmts);
+
+  // Seed commands
+  const cmdStmts = SEED_COMMANDS.map((c) => ({
+    sql: "INSERT OR IGNORE INTO commands (cmd, label, description, intent_patch) VALUES (?,?,?,?)",      args: [c.cmd, c.label, c.description, JSON.stringify(c.intentPatch)] as (string | number | null)[],
+  }));
+  await client.batch(cmdStmts);
+
+  // Seed curated prompts (batched)
+  const BATCH_SIZE = 200;
+  for (let i = 0; i < ALL_SEED_PROMPTS.length; i += BATCH_SIZE) {
+    const batch = ALL_SEED_PROMPTS.slice(i, i + BATCH_SIZE);
+    const stmts: { sql: string; args: (string | number | null)[] }[] = [];
+    for (const seed of batch) {
+      const p = seedPromptToRecord(seed);
+      p.promptText = deepenCuratedBody(seed);
+      const searchText = buildSearchText(p);
+      stmts.push({
+        sql: `INSERT OR IGNORE INTO prompts (${PROMPT_COLS.join(",")}) VALUES (${PROMPT_COLS.map(() => "?").join(",")})`,
+        args: [
+          p.id, p.title, p.description, p.category, p.subcategory ?? null,
+          JSON.stringify(p.tasks), JSON.stringify(p.tags), p.difficulty,
+          p.promptText, JSON.stringify(p.variables), p.inputType, p.outputType,
+          p.purpose ?? null, p.transformation ?? null, p.tone ?? null, JSON.stringify(p.bestFor),
+          JSON.stringify(p.platforms), JSON.stringify(p.platformAdaptations),
+          p.qualityScore, p.usageCount, p.rating, p.ratingCount, p.author,
+          p.status, p.source, p.isFeatured ? 1 : 0, p.createdAt, p.updatedAt,
+          searchText,
+        ],
+      });
+      stmts.push({
+        sql: "INSERT OR IGNORE INTO prompts_fts (id, text) VALUES (?, ?)",
+        args: [p.id, searchText],
+      });
+    }
+    await client.batch(stmts);
   }
 
-  const insertOne = makePromptInserter(db);
-
-  // ---------- Curated prompts ----------
-  db.exec("BEGIN");
-  for (const seed of ALL_SEED_PROMPTS) {
-    const p = seedPromptToRecord(seed);
-    // Hand-written opening stays verbatim; deep sections appended for parity
-    // with the procedural corpus (which averages ~5k chars).
-    p.promptText = deepenCuratedBody(seed);
-    insertOne(p, buildSearchText(p));
-  }
-  db.exec("COMMIT");
-
-  // ---------- Generated corpus ----------
+  // Seed generated corpus
   const target = genTarget();
   if (target > 0) {
     const t0 = Date.now();
     let inserted = 0;
-    db.exec("BEGIN");
-    for (let i = 0; i < target; i++) {
-      const p = seedPromptToRecord(generateSeedPrompt(i));
-      insertOne(p, buildSearchText(p));
-      inserted++;
-      if (inserted % BATCH === 0) {
-        db.exec("COMMIT");
-        db.exec("BEGIN");
+    for (let i = 0; i < target; i += BATCH_SIZE) {
+      const stmts: { sql: string; args: (string | number | null)[] }[] = [];
+      const end = Math.min(i + BATCH_SIZE, target);
+      for (let j = i; j < end; j++) {
+        const p = seedPromptToRecord(generateSeedPrompt(j));
+        const searchText = buildSearchText(p);
+        stmts.push({
+          sql: `INSERT OR IGNORE INTO prompts (${PROMPT_COLS.join(",")}) VALUES (${PROMPT_COLS.map(() => "?").join(",")})`,
+          args: [
+            p.id, p.title, p.description, p.category, p.subcategory ?? null,
+            JSON.stringify(p.tasks), JSON.stringify(p.tags), p.difficulty,
+            p.promptText, JSON.stringify(p.variables), p.inputType, p.outputType,
+            p.purpose ?? null, p.transformation ?? null, p.tone ?? null, JSON.stringify(p.bestFor),
+            JSON.stringify(p.platforms), JSON.stringify(p.platformAdaptations),
+            p.qualityScore, p.usageCount, p.rating, p.ratingCount, p.author,
+            p.status, p.source, p.isFeatured ? 1 : 0, p.createdAt, p.updatedAt,
+            searchText,
+          ],
+        });
+        stmts.push({
+          sql: "INSERT OR IGNORE INTO prompts_fts (id, text) VALUES (?, ?)",
+          args: [p.id, searchText],
+        });
+        inserted++;
       }
+      await client.batch(stmts);
     }
-    db.exec("COMMIT");
-    // eslint-disable-next-line no-console
-    console.log(
-      `[db] Generated ${inserted.toLocaleString()} procedural prompts in ${((Date.now() - t0) / 1000).toFixed(1)}s`,
-    );
+    console.log(`[db] Generated ${inserted.toLocaleString()} procedural prompts in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
   }
 
-  const insertWorkflow = db.prepare(
-    `INSERT INTO workflows (id, name, description, category, steps, usage_count, is_featured, author, created_at)
-     VALUES (?,?,?,?,?,?,?,?,?)`,
-  );
-  for (const w of SEED_WORKFLOWS) {
-    insertWorkflow.run(
+  // Seed workflows
+  const wfStmts = SEED_WORKFLOWS.map((w) => ({
+    sql: `INSERT OR IGNORE INTO workflows (id, name, description, category, steps, usage_count, is_featured, author, created_at)
+          VALUES (?,?,?,?,?,?,?,?,?)`,
+    args: [
       w.id, w.name, w.description, w.category, JSON.stringify(w.steps),
       w.usageCount, w.isFeatured ? 1 : 0, "Promptly Editorial", daysAgoIso(120),
-    );
-  }
+    ] as (string | number)[],
+  }));
+  await client.batch(wfStmts);
 
-  // Back to normal mode: triggers keep runtime writes searchable.
-  db.exec(FTS_TRIGGERS_SQL);
+  // Create FTS triggers (if not exists)
+  await client.execute({
+    sql: `CREATE TRIGGER IF NOT EXISTS prompts_fts_insert AFTER INSERT ON prompts BEGIN
+            INSERT INTO prompts_fts (id, text) VALUES (new.id, new.search_text);
+          END`,
+    args: [],
+  });
+  await client.execute({
+    sql: `CREATE TRIGGER IF NOT EXISTS prompts_fts_delete AFTER DELETE ON prompts BEGIN
+            DELETE FROM prompts_fts WHERE id = old.id;
+          END`,
+    args: [],
+  });
+  await client.execute({
+    sql: `CREATE TRIGGER IF NOT EXISTS prompts_fts_update AFTER UPDATE OF search_text ON prompts BEGIN
+            UPDATE prompts_fts SET text = new.search_text WHERE id = new.id;
+          END`,
+    args: [],
+  });
 
-  // Planner statistics so the query optimizer picks our indexes at scale.
-  db.exec("ANALYZE");
-
-  // eslint-disable-next-line no-console
   console.log(
-    `[db] Seeded ${ALL_SEED_PROMPTS.length} curated + ${target.toLocaleString()} generated prompts, ${SEED_WORKFLOWS.length} workflows, ` +
-      `${SEED_CATEGORIES.length} categories`,
+    `[db] Seeded ${ALL_SEED_PROMPTS.length} curated + ${target.toLocaleString()} generated prompts, ${SEED_WORKFLOWS.length} workflows, ${SEED_CATEGORIES.length} categories`,
   );
 }

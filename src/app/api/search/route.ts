@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import type { Difficulty, SearchFilters, SortOption } from "@/lib/types";
 import { searchPrompts } from "@/lib/services/searchService";
 import { eventRepo } from "@/lib/db/repositories";
+import { ensureSeeded } from "@/lib/db/connection";
 
 export const runtime = "nodejs";
 
@@ -17,6 +18,7 @@ function list(params: URLSearchParams, key: string): string[] | undefined {
 }
 
 export async function GET(req: NextRequest) {
+  await ensureSeeded();
   const p = req.nextUrl.searchParams;
   const q = (p.get("q") ?? "").trim();
 
@@ -32,11 +34,11 @@ export async function GET(req: NextRequest) {
   const sort = (p.get("sort") as SortOption | null) ?? "relevance";
   const limit = Math.min(Number(p.get("limit")) || 24, 60);
 
-  const { results } = searchPrompts(q, { filters, sort, limit });
+  const { results } = await searchPrompts(q, { filters, sort, limit });
 
   if (q) {
     try {
-      eventRepo.log({ type: "search", outcome: "explore", meta: { query: q } });
+      await eventRepo.log({ type: "search", outcome: "explore", meta: { query: q } });
     } catch {
       /* analytics is best-effort */
     }

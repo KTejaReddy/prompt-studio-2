@@ -17,22 +17,12 @@ import { parseIntent } from "./intentService";
 import { contentTokens } from "./textUtils";
 import { promptRepo } from "@/lib/db/repositories";
 
-/**
- * SearchService — hybrid retrieval.
- *
- *   keyword search  +  semantic/vector search  +  structured metadata scoring
- *
- * Providers are replaceable: embeddings behind `embeddingService`, the corpus
- * behind repositories. Nothing here knows about any vendor.
- */
-
 // ---------- Structured scoring ----------
 
 function taskOverlap(intentTasks: string[], promptTasks: string[]): number {
   if (intentTasks.length === 0 || promptTasks.length === 0) return 0.5;
   const set = new Set(promptTasks);
   const hits = intentTasks.filter((t) => set.has(t)).length;
-  // Partial credit for adjacent tasks handled upstream via synonyms.
   return hits / intentTasks.length;
 }
 
@@ -65,51 +55,14 @@ export function structuredScore(
   popularityMax: number,
 ): number {
   const w = MATCH_CONFIG.structuredWeights;
-
-  const task = taskMatchScore(
-    intent.tasks.map((t) => t.task),
-    p.tasks,
-  );
-
-  const category =
-    intent.category == null ? 0.6 : p.category === intent.category ? 1 : 0.25;
-
-  const inputCompat =
-    intent.inputType == null
-      ? 0.7
-      : p.inputType === intent.inputType
-        ? 1
-        : p.inputType === "text"
-          ? 0.55
-          : 0.15;
-
-  const outputCompat =
-    intent.outputType == null
-      ? 0.7
-      : p.outputType === intent.outputType
-        ? 1
-        : 0.3;
-
-  const platformCompat =
-    intent.platform == null
-      ? 0.75
-      : p.platforms.includes(intent.platform)
-        ? 1
-        : 0.2;
-
+  const task = taskMatchScore(intent.tasks.map((t) => t.task), p.tasks);
+  const category = intent.category == null ? 0.6 : p.category === intent.category ? 1 : 0.25;
+  const inputCompat = intent.inputType == null ? 0.7 : p.inputType === intent.inputType ? 1 : p.inputType === "text" ? 0.55 : 0.15;
+  const outputCompat = intent.outputType == null ? 0.7 : p.outputType === intent.outputType ? 1 : 0.3;
+  const platformCompat = intent.platform == null ? 0.75 : p.platforms.includes(intent.platform) ? 1 : 0.2;
   const quality = p.qualityScore;
-  const popularity =
-    popularityMax > 0 ? Math.log10(1 + p.usageCount) / Math.log10(1 + popularityMax) : 0.5;
-
-  return (
-    w.taskMatch * task +
-    w.categoryMatch * category +
-    w.inputCompat * inputCompat +
-    w.outputCompat * outputCompat +
-    w.platformCompat * platformCompat +
-    w.quality * quality +
-    w.popularity * popularity
-  );
+  const popularity = popularityMax > 0 ? Math.log10(1 + p.usageCount) / Math.log10(1 + popularityMax) : 0.5;
+  return w.taskMatch * task + w.categoryMatch * category + w.inputCompat * inputCompat + w.outputCompat * outputCompat + w.platformCompat * platformCompat + w.quality * quality + w.popularity * popularity;
 }
 
 // ---------- Keyword scoring ----------
@@ -141,9 +94,7 @@ function promptDocText(p: PromptRecord): string {
 
 function keywordScore(queryTokens: string[], d: DocTerms): number {
   if (queryTokens.length === 0) return 0.5;
-  let hits = 0;
-  let titleHits = 0;
-  let tagHits = 0;
+  let hits = 0, titleHits = 0, tagHits = 0;
   for (const t of queryTokens) {
     if (d.terms.has(t)) hits++;
     if (d.titleTerms.includes(t)) titleHits++;
@@ -163,7 +114,6 @@ export interface SearchOptions {
   limit?: number;
 }
 
-/** Apply hard metadata filters before ranking. */
 export function applyFilters(prompts: PromptRecord[], f?: SearchFilters): PromptRecord[] {
   if (!f) return prompts;
   return prompts.filter((p) => {
@@ -184,34 +134,22 @@ export function applyFilters(prompts: PromptRecord[], f?: SearchFilters): Prompt
 export function buildReasons(intent: IntentAnalysis, p: PromptRecord): MatchReason[] {
   const reasons: MatchReason[] = [];
   const shared = p.tasks.filter((t) => intent.tasks.map((i) => i.task).includes(t));
-  if (shared.length > 0) {
-    reasons.push({ label: "Task alignment", detail: `Covers ${shared.join(" + ")}` });
-  }
-  if (intent.category && p.category === intent.category) {
-    reasons.push({ label: "Domain", detail: `Same domain (${p.category})` });
-  }
-  if (intent.inputType && p.inputType === intent.inputType) {
-    reasons.push({ label: "Input fit", detail: `Handles ${p.inputType} input` });
-  }
-  if (intent.outputType && p.outputType === intent.outputType) {
-    reasons.push({ label: "Output fit", detail: `Produces ${p.outputType}` });
-  }
-  if (p.rating >= 4.7) {
-    reasons.push({ label: "Community proof", detail: `${p.rating.toFixed(1)}★ from ${p.ratingCount} users` });
-  }
-  if (p.usageCount > 2000) {
-    reasons.push({ label: "Battle-tested", detail: `${p.usageCount.toLocaleString()} uses` });
-  }
+  if (shared.length > 0) reasons.push({ label: "Task alignment", detail: `Covers ${shared.join(" + ")}` });
+  if (intent.category && p.category === intent.category) reasons.push({ label: "Domain", detail: `Same domain (${p.category})` });
+  if (intent.inputType && p.inputType === intent.inputType) reasons.push({ label: "Input fit", detail: `Handles ${p.inputType} input` });
+  if (intent.outputType && p.outputType === intent.outputType) reasons.push({ label: "Output fit", detail: `Produces ${p.outputType}` });
+  if (p.rating >= 4.7) reasons.push({ label: "Community proof", detail: `${p.rating.toFixed(1)}★ from ${p.ratingCount} users` });
+  if (p.usageCount > 2000) reasons.push({ label: "Battle-tested", detail: `${p.usageCount.toLocaleString()} uses` });
   return reasons.slice(0, 4);
 }
 
 // ---------- Scale-safe engine bootstrap ----------
 
 let engineReady = false;
-/** Train TF-IDF statistics once per process from a bounded corpus sample. */
-export function ensureSemanticEngine(): void {
+
+export async function ensureSemanticEngine(): Promise<void> {
   if (engineReady) return;
-  const sample = promptRepo.embeddingSample(6000);
+  const sample = await promptRepo.embeddingSample(6000);
   embeddingIndex.ensureTrainedDocs(
     sample.map(promptToDocument),
     `sample:${sample.length}`,
@@ -219,19 +157,6 @@ export function ensureSemanticEngine(): void {
   engineReady = true;
 }
 
-/**
- * Eagerly initialise the semantic engine on import so the first request
- * doesn't pay the cold-start cost (embedding training + FTS warm-up).
- * Module-level side-effect is safe because the DB singleton and embedding
- * index are both process-scoped.
- */
-try {
-  ensureSemanticEngine();
-} catch {
-  /* best-effort: will retry on first search */
-}
-
-/** Significant normalized tokens pushed down to full-text retrieval. */
 function retrievalTokens(rawQuery: string): string[] {
   return contentTokens(rawQuery).filter((t) => t.length >= 2).slice(0, 8);
 }
@@ -239,23 +164,17 @@ function retrievalTokens(rawQuery: string): string[] {
 /**
  * Rank prompts for an intent using the hybrid model and return calibrated
  * scored results in rank order.
- *
- * Retrieval pushes filtering, text match and base ordering into SQLite
- * (FTS5), then re-ranks only a bounded candidate set (~1200) with the full
- * hybrid model. Stays fast at hundreds of thousands of prompts.
  */
-export function searchPrompts(
+export async function searchPrompts(
   queryOrIntent: string | IntentAnalysis,
   opts: SearchOptions = {},
-): { results: ScoredPrompt[]; intent: IntentAnalysis } {
+): Promise<{ results: ScoredPrompt[]; intent: IntentAnalysis }> {
   const intent =
     typeof queryOrIntent === "string" ? parseIntent(queryOrIntent) : queryOrIntent;
 
-  ensureSemanticEngine();
+  await ensureSemanticEngine();
 
-  // Phase 1 — light candidate slice from SQLite (no fat columns), gated by
-  // any filters that cannot push down to SQL.
-  const candidates = promptRepo.candidatesFor({
+  const candidates = await promptRepo.candidatesFor({
     tokens: retrievalTokens(intent.rawQuery),
     filters: opts.filters,
     sort: opts.sort,
@@ -265,63 +184,46 @@ export function searchPrompts(
   if (gated.length === 0) return { results: [], intent };
 
   const queryTokens = contentTokens(intent.rawQuery);
-  const popularityMax = promptRepo.popularityMax();
+  const popularityMax = await promptRepo.popularityMax();
 
-  // Semantic machinery shared by pre-scoring and final scoring.
   const qv = embeddingIndex.embedQueryText(queryToIndexText(intent));
   const semOf = (p: PromptRecord): number =>
-    Math.min(
-      1,
-      cosineSimilarity(qv, embeddingIndex.embedDocText(promptToDocument(p))) / 0.45,
-    );
+    Math.min(1, cosineSimilarity(qv, embeddingIndex.embedDocText(promptToDocument(p))) / 0.45);
 
-  // Phase 2 — cheap pre-score on light rows, then hydrate the shortlist and
-  // run the exact hybrid model with real bodies. Keeps heavy I/O bounded:
-  // ~1200 narrow rows read, ~90 wide rows fetched per request.
   let pool: PromptRecord[];
   if (opts.sort && opts.sort !== "relevance") {
-    pool = promptRepo.byIds(gated.slice(0, 90).map((p) => p.id));
+    pool = await promptRepo.byIds(gated.slice(0, 90).map((p) => p.id));
     const order = new Map(pool.map((p) => [p.id, p]));
     pool = gated.slice(0, 90).map((p) => order.get(p.id)!).filter(Boolean);
   } else {
     const ranked = gated
       .map((p) => ({
         p,
-        s:
-          MATCH_CONFIG.weights.semantic * semOf(p) +
+        s: MATCH_CONFIG.weights.semantic * semOf(p) +
           MATCH_CONFIG.weights.keyword * keywordScore(queryTokens, docTerms(p)) +
           MATCH_CONFIG.weights.structured * structuredScore(intent, p, popularityMax),
       }))
       .sort((a, b) => b.s - a.s)
       .slice(0, 90);
-    const hydrated = promptRepo.byIds(ranked.map(({ p }) => p.id));
+    const hydrated = await promptRepo.byIds(ranked.map(({ p }) => p.id));
     const byId = new Map(hydrated.map((p) => [p.id, p]));
     pool = ranked.map(({ p }) => byId.get(p.id)).filter((x): x is PromptRecord => !!x);
   }
+
   const { semantic: ws, keyword: wk, structured: wst } = MATCH_CONFIG.weights;
 
   const scored: ScoredPrompt[] = pool.map((p) => {
     const semantic = semOf(p);
     const keyword = keywordScore(queryTokens, docTerms(p));
     const structured = structuredScore(intent, p, popularityMax);
-
     const raw = ws * semantic + wk * keyword + wst * structured;
     const { center, scale } = MATCH_CONFIG.calibration;
     const calibrated = 1 / (1 + Math.exp(-(raw - center) / scale));
-
-    return {
-      prompt: p,
-      score: calibrated,
-      semantic,
-      keyword,
-      structured,
-      reasons: buildReasons(intent, p),
-    };
+    return { prompt: p, score: calibrated, semantic, keyword, structured, reasons: buildReasons(intent, p) };
   });
 
   scored.sort((a, b) => b.score - a.score);
 
-  // Non-relevance sorts reorder within the same filter pool.
   if (opts.sort && opts.sort !== "relevance") {
     const cmp: Record<Exclude<SortOption, "relevance">, (a: ScoredPrompt, b: ScoredPrompt) => number> = {
       popular: (a, b) => b.prompt.usageCount - a.prompt.usageCount,
@@ -336,17 +238,8 @@ export function searchPrompts(
 }
 
 function queryToIndexText(intent: IntentAnalysis): string {
-  // Enrich the retrieval text with extracted structure so vector search sees
-  // the same signals the structured scorer does.
-  return [
-    intent.rawQuery,
-    intent.domain ?? "",
-    intent.tasks.map((t) => t.task).join(" "),
-    intent.inputType ?? "",
-    intent.outputType ?? "",
-  ]
-    .filter(Boolean)
-    .join(". ");
+  return [intent.rawQuery, intent.domain ?? "", intent.tasks.map((t) => t.task).join(" "), intent.inputType ?? "", intent.outputType ?? ""]
+    .filter(Boolean).join(". ");
 }
 
 export function difficultyLabel(d: Difficulty): string {

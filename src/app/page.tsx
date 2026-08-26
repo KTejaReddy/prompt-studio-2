@@ -3,19 +3,17 @@ import { listCategories, promptRepo } from "@/lib/db/repositories";
 import { PromptCard } from "@/components/PromptCard";
 import { FindBar } from "@/components/FindBar";
 import { familyForCategory, FEATURED_ROTATION } from "@/lib/ui/categoryTheme";
+import { ensureSeeded } from "@/lib/db/connection";
 
 export const dynamic = "force-dynamic";
 
-export default function HomePage() {
-  // Run independent DB reads concurrently — each hits a different index,
-  // so parallelising avoids ~30–80 ms of sequential SQLite round-trips.
-  const [categories, counts, featured, trending, recent] = [
-    listCategories(),
-    promptRepo.countsByCategory(),
-    promptRepo.featured(2),
-    promptRepo.trending(8),
-    promptRepo.recent(4),
-  ];
+export default async function HomePage() {
+  await ensureSeeded();
+  const categories = await listCategories();
+  const counts = await promptRepo.countsByCategory();
+  const featured = await promptRepo.featured(2);
+  const trending = await promptRepo.trending(8);
+  const recent = await promptRepo.recent(4);
   const totalPrompts = Object.values(counts).reduce((a, b) => a + b, 0);
 
   return (

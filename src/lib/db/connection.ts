@@ -1,121 +1,98 @@
-import { DatabaseSync } from "node:sqlite";
-import fs from "node:fs";
-import path from "node:path";
+import { createClient, type Client } from "@libsql/client";
 import { SCHEMA_SQL } from "./schema";
 import { seedDatabase } from "./seed";
 
 /**
- * SQLite connection layer built on the Node built-in `node:sqlite` driver.
- * The rest of the app depends only on this small interface, so swapping to
- * Postgres or another engine later means reimplementing this file only.
+ * Database layer using Turso (libSQL cloud).
+ *
+ * When TURSO_DATABASE_URL is set, queries go to Turso's cloud — no local
+ * SQLite needed.  This works in serverless (Vercel, Netlify, etc.) because
+ * there's no file I/O involved.
+ *
+ * Falls back to a local file via `file:` URL for development.
  */
 
-const DATA_DIR = process.env.VERCEL
-  ? path.join("/tmp", "promptly-data")
-  : path.join(process.cwd(), "data");
-const DB_PATH = process.env.PROMPTLY_DB ?? path.join(DATA_DIR, "promptly.sqlite");
-
-/** Vercel serverless has limited RAM and a read-only root fs (only /tmp is writable). */
-const IS_VERCEL = !!process.env.VERCEL;
+const TURSO_URL = process.env.TURSO_DATABASE_URL;
+const TURSO_TOKEN = process.env.TURSO_AUTH_TOKEN;
 
 declare global {
   // eslint-disable-next-line no-var
-  var __promptlyDb: DatabaseSync | undefined;
+  var __promptlyClient: Client | undefined;
 }
 
-function openDatabase(): DatabaseSync {
-  fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
-  const db = new DatabaseSync(DB_PATH);
-  db.exec("PRAGMA journal_mode = WAL;");
-  db.exec("PRAGMA foreign_keys = ON;");
-  if (IS_VERCEL) {
-    // Vercel serverless: lean pragmas, no mmap, small cache.
-    db.exec("PRAGMA cache_size = -8192;"); // 8 MiB page cache
-    db.exec("PRAGMA synchronous = NORMAL;");
-    db.exec("PRAGMA temp_store = MEMORY;");
-  } else {
-    // Local / self-hosted: aggressive caching for the multi-GB corpus.
-    db.exec("PRAGMA cache_size = -65536;"); // 64 MiB page cache
-    db.exec("PRAGMA mmap_size = 805306368;"); // memory-map 768 MiB of the file
-    db.exec("PRAGMA synchronous = NORMAL;");
-    db.exec("PRAGMA temp_store = MEMORY;");
-    db.exec("PRAGMA optimize");
+function createDbClient(): Client {
+  if (TURSO_URL) {
+    return createClient({
+      url: TURSO_URL,
+      authToken: TURSO_TOKEN,
+    });
   }
-  return db;
+  // Local development: file-based libSQL (no Turso account needed).
+  return createClient({ url: "file:data/promptly.sqlite" });
 }
 
-function getDb(): DatabaseSync {
-  if (!globalThis.__promptlyDb) {
-    const db = openDatabase();
-    migrateLegacySchema(db);
-    db.exec(SCHEMA_SQL);
-    const row = db.prepare("SELECT COUNT(*) AS n FROM prompts").get() as
-      | { n: number }
-      | undefined;
-    if (!row || row.n === 0) {
-      seedDatabase(db);
-    }
-    globalThis.__promptlyDb = db;
+function getClient(): Client {
+  if (!globalThis.__promptlyClient) {
+    globalThis.__promptlyClient = createDbClient();
   }
-  return globalThis.__promptlyDb;
+  return globalThis.__promptlyClient;
 }
 
-/**
- * On Vercel serverless the /tmp DB is ephemeral — seeded fresh on each cold
- * start. Expose a quick health check so the home page can verify the DB.
- */
-export function isDbReady(): boolean {
-  try {
-    const r = getDb().prepare("SELECT 1").get();
-    return !!r;
-  } catch {
-    return false;
+/** Check if the database has been seeded; if not, run the seed. */
+export async function ensureSeeded(): Promise<void> {
+  const client = getClient();
+  const row = await client.execute("SELECT COUNT(*) AS n FROM prompts");
+  const count = Number(row.rows[0]?.n ?? 0);
+  if (count === 0) {
+    await seedDatabase(client);
   }
 }
 
 /**
- * Pre-FTS databases lack the prompts.search_text column the schema now needs.
- * Dev data is disposable (npm run db:reset), so drop and reseed rather than
- * attempting a 100k+ row backfill at boot.
+ * Async query helper — returns an array of row objects.
+ * Mirrors the old sync `query()` signature for easy migration.
  */
-function migrateLegacySchema(db: DatabaseSync): void {
-  const hasPrompts = db
-    .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='prompts'")
-    .get();
-  if (!hasPrompts) return;
-  const cols = db.prepare("PRAGMA table_info(prompts)").all() as unknown as {
-    name: string;
-  }[];
-  if (cols.some((c) => c.name === "search_text")) return;
-  db.exec(
-    `DROP TRIGGER IF EXISTS prompts_fts_insert; DROP TRIGGER IF EXISTS prompts_fts_delete;
-     DROP TRIGGER IF EXISTS prompts_fts_update; DROP TABLE IF EXISTS prompts_fts;
-     DROP TABLE IF EXISTS prompts; DROP TABLE IF EXISTS workflows;
-     DROP TABLE IF EXISTS commands; DROP TABLE IF EXISTS saved_prompts;
-     DROP TABLE IF EXISTS submissions; DROP TABLE IF EXISTS events;
-     DROP TABLE IF EXISTS subcategories; DROP TABLE IF EXISTS categories;
-     DROP TABLE IF EXISTS platforms;`,
-  );
-}
-
-/** Prepared-statement helpers used by repositories. */
-export function query<T extends object>(
+export async function query<T = Record<string, unknown>>(
   sql: string,
   ...params: (string | number | null)[]
-): T[] {
-  return getDb().prepare(sql).all(...params) as unknown as T[];
+): Promise<T[]> {
+  const client = getClient();
+  const result = await client.execute({ sql, args: params });
+  return result.rows as unknown as T[];
 }
 
-export function queryOne<T extends object>(
+/**
+ * Async single-row helper — returns one row or undefined.
+ */
+export async function queryOne<T = Record<string, unknown>>(
   sql: string,
   ...params: (string | number | null)[]
-): T | undefined {
-  return getDb().prepare(sql).get(...params) as unknown as T | undefined;
+): Promise<T | undefined> {
+  const rows = await query<T>(sql, ...params);
+  return rows[0];
 }
 
-export function run(
+/**
+ * Async write helper — runs INSERT/UPDATE/DELETE.
+ */
+export async function run(
   sql: string,
   ...params: (string | number | null)[]
-): void {
-  getDb().prepare(sql).run(...params);
+): Promise<void> {
+  const client = getClient();
+  await client.execute({ sql, args: params });
+}
+
+/**
+ * Execute multiple statements as a batch (atomic).
+ */
+export async function executeBatch(
+  stmts: { sql: string; args?: (string | number | null)[] }[],
+): Promise<void> {
+  const client = getClient();
+  const batch = stmts.map((s) => ({
+    sql: s.sql,
+    args: s.args ?? [],
+  }));
+  await client.batch(batch);
 }

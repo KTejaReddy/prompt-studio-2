@@ -53,7 +53,7 @@ export async function POST(req: NextRequest) {
       level: parseLevel(body?.level),
     });
     try {
-      eventRepo.log({ type: "generate", meta: { model: result.model } });
+      await eventRepo.log({ type: "generate", meta: { model: result.model } });
     } catch {
       /* analytics is best-effort */
     }

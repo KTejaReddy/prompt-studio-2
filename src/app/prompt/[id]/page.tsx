@@ -8,6 +8,7 @@ import { compactNumber, timeAgo } from "@/lib/ui/format";
 import { PromptCard } from "@/components/PromptCard";
 import { PromptBody } from "@/components/PromptBody";
 import { familyForCategory } from "@/lib/ui/categoryTheme";
+import { ensureSeeded } from "@/lib/db/connection";
 
 export const dynamic = "force-dynamic";
 
@@ -20,26 +21,27 @@ export async function generateMetadata({
 }: {
   params: { id: string };
 }): Promise<Metadata> {
-  const prompt = promptRepo.byId(params.id);
+  await ensureSeeded();
+  const prompt = await promptRepo.byId(params.id);
   return { title: prompt?.title ?? "Prompt" };
 }
 
-// Difficulty is semantic color + label (never color alone).
 const DIFFICULTY_STYLE: Record<string, string> = {
   beginner: "bg-mint-soft text-mint-deep",
   intermediate: "bg-gold-soft text-gold-deep",
   advanced: "bg-coral-soft text-coral-deep",
 };
 
-export default function PromptDetailPage({
+export default async function PromptDetailPage({
   params,
 }: {
   params: { id: string };
 }) {
-  const prompt = promptRepo.byId(params.id);
+  await ensureSeeded();
+  const prompt = await promptRepo.byId(params.id);
   if (!prompt) notFound();
 
-  const related = relatedTo(params.id, 4);
+  const related = await relatedTo(params.id, 4);
   const cat = CATS[prompt.category] ?? { name: prompt.category, color: "#FF8A3D" };
   const fam = familyForCategory(prompt.category);
 
@@ -49,7 +51,6 @@ export default function PromptDetailPage({
         ← Back to library
       </Link>
 
-      {/* ---------- Header: the category's color world (§19) ---------- */}
       <header
         className="animate-fade-up rounded-xl2 p-6 ring-1 ring-ink/5"
         style={{ backgroundColor: fam.surface }}
@@ -85,10 +86,8 @@ export default function PromptDetailPage({
         </div>
       </header>
 
-      {/* ---------- Prompt body + one-click copy ---------- */}
       <PromptBody promptText={prompt.promptText} originPromptId={prompt.id} />
 
-      {/* ---------- About ---------- */}
       <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4 animate-fade-in">
         {[
           { label: "Purpose", value: prompt.purpose, accent: "border-t-pink" },
@@ -109,7 +108,6 @@ export default function PromptDetailPage({
           ))}
       </section>
 
-      {/* ---------- Related ---------- */}
       {related.length > 0 && (
         <section className="animate-fade-in">
           <h2 className="eyebrow mb-4">related prompts</h2>

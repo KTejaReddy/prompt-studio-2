@@ -5,6 +5,7 @@ import {
   listPlatforms,
   workflowRepo,
 } from "@/lib/db/repositories";
+import { ensureSeeded } from "@/lib/db/connection";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -15,12 +16,13 @@ const TAX_CACHE = {
 } as const;
 
 export async function GET() {
+  await ensureSeeded();
   return NextResponse.json(
     {
-      categories: listCategories(),
-      platforms: listPlatforms(),
-      commands: listCommands(),
-      workflows: workflowRepo.list(),
+      categories: await listCategories(),
+      platforms: await listPlatforms(),
+      commands: await listCommands(),
+      workflows: await workflowRepo.list(),
     },
     { headers: TAX_CACHE as unknown as Record<string, string> },
   );

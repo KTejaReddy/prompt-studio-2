@@ -50,8 +50,6 @@ export function detectComposition(
   const eligible = matches.filter((m) => m.score >= cfg.memberScore);
   if (eligible.length < cfg.minDistinctPrompts) return null;
 
-  // Greedy: walk intent tasks in order, pick the best prompt for each that
-  // hasn't been used yet and actually covers that task.
   const chosen: ComposeCandidate[] = [];
   const used = new Set<string>();
 
@@ -72,7 +70,6 @@ export function detectComposition(
 
   if (chosen.length < cfg.minDistinctPrompts) return null;
 
-  // Composition must beat the single best prompt's own coverage.
   const bestSingle = matches[0] ? taskCoverage(matches[0], intentTasks) : 0;
   const combined = new Set(chosen.flatMap((c) => c.coveredTasks)).size / Math.max(intentTasks.length, 1);
   if (bestSingle > cfg.maxSingleCoverage || combined <= bestSingle) return null;
@@ -89,23 +86,21 @@ export function detectComposition(
 }
 
 /** Full find-decision pipeline for a natural-language request. */
-export function findMatch(query: string): FindDecision {
-  const { results, intent } = searchPrompts(query);
+export async function findMatch(query: string): Promise<FindDecision> {
+  const { results, intent } = await searchPrompts(query);
 
   let verdict: FindDecision["verdict"] = decideVerdict(results);
   const suggestionWorkflow = detectComposition(intent, results);
 
-  // A viable composition outranks a merely-related single match.
   if (suggestionWorkflow && verdict !== "strong") verdict = "compose";
 
   let message: string;
   switch (verdict) {
     case "strong":
-      message = `Found a strong match${results[0] ? `: “${results[0].prompt.title}”` : ""}.`;
+      message = `Found a strong match${results[0] ? `: "${results[0].prompt.title}"` : ""}.`;
       break;
     case "compose":
-      message =
-        "This is a multi-step request. Several prompts cover it together — combine them into a workflow.";
+      message = "This is a multi-step request. Several prompts cover it together — combine them into a workflow.";
       break;
     case "related":
       message = "Found related prompts. Customize one to fit exactly?";
@@ -118,27 +113,24 @@ export function findMatch(query: string): FindDecision {
 }
 
 /**
- * Related prompts for the "customize existing" path — same domain or
- * overlapping tasks, excluding the anchor itself.
+ * Related prompts for the "customize existing" path.
  */
-export function relatedTo(promptId: string, limit = 4): ScoredPrompt[] {
-  const anchor = promptRepo.byId(promptId);
+export async function relatedTo(promptId: string, limit = 4): Promise<ScoredPrompt[]> {
+  const anchor = await promptRepo.byId(promptId);
   if (!anchor) return [];
-  // Scale-safe: pull an in-domain candidate slice instead of the whole library.
   const anchorTokens = contentTokens(
     `${anchor.title} ${anchor.tags.join(" ")} ${anchor.subcategory ?? ""}`,
   );
-  let pool = promptRepo
-    .candidatesFor({
-      tokens: anchorTokens,
-      filters: { categories: [anchor.category] },
-      limit: 60,
-    })
-    .filter((p) => p.id !== promptId);
+  let pool = (await promptRepo.candidatesFor({
+    tokens: anchorTokens,
+    filters: { categories: [anchor.category] },
+    limit: 60,
+  })).filter((p) => p.id !== promptId);
   if (pool.length === 0) {
-    pool = promptRepo
-      .candidatesFor({ filters: { categories: [anchor.category] }, limit: 40 })
-      .filter((p) => p.id !== promptId);
+    pool = (await promptRepo.candidatesFor({
+      filters: { categories: [anchor.category] },
+      limit: 40,
+    })).filter((p) => p.id !== promptId);
   }
   return pool
     .map((p) => {

@@ -97,22 +97,16 @@ const PROMPT_COLS = `id, title, description, category, subcategory, tasks, tags,
 
 const popMaxCache: { value: number; at: number } = { value: 0, at: 0 };
 
-/**
- * Tiny TTL cache for hot read-mostly aggregates (home page rails, counts).
- * The corpus is seed-static; only usage counters change, so a short TTL is
- * invisible to users while turning multi-second scans into memory reads.
- */
 const ttlCache = new Map<string, { at: number; value: unknown }>();
-function cached<T>(key: string, ttlMs: number, compute: () => T): T {
+async function cached<T>(key: string, ttlMs: number, compute: () => Promise<T>): Promise<T> {
   const hit = ttlCache.get(key);
   const now = Date.now();
   if (hit && now - hit.at <= ttlMs) return hit.value as T;
-  const value = compute();
+  const value = await compute();
   ttlCache.set(key, { at: now, value });
   return value;
 }
 
-/** JS mirror of the pushdown-able SQL filters, for the FTS id-pool path. */
 type FilterableRow = Pick<
   PromptRow,
   "status" | "category" | "subcategory" | "difficulty" | "rating" | "quality_score" | "is_featured"
@@ -129,7 +123,6 @@ function matchesJsFilters(r: FilterableRow, f?: SearchFilters): boolean {
   return true;
 }
 
-/** JS sort mirrors for the non-relevance sorts on the FTS path. */
 const JS_SORT_KEYS: Record<Exclude<SortOption, "relevance">, (r: PromptRow) => number> = {
   popular: (r) => r.usage_count,
   rating: (r) => r.rating,
@@ -137,9 +130,6 @@ const JS_SORT_KEYS: Record<Exclude<SortOption, "relevance">, (r: PromptRow) => n
   quality: (r) => r.quality_score,
 };
 
-/** Candidate columns — everything except the fat blobs (body, variables,
- * platform adaptations). Pre-scoring only needs text + metadata; full rows
- * are hydrated for the shortlisted few. */
 const LIGHT_COLS = PROMPT_COLS.split(",")
   .map((c) => c.trim())
   .filter((c) => !"prompt_text variables platform_adaptations".split(" ").includes(c))
@@ -162,74 +152,78 @@ const SORT_ORDERS: Record<SortOption, string> = {
 };
 
 let ftsCache: boolean | undefined;
-function ftsAvailable(): boolean {
+async function ftsAvailable(): Promise<boolean> {
   if (ftsCache === undefined) {
-    ftsCache = !!queryOne(
-      `SELECT 1 FROM sqlite_master WHERE type='table' AND name='prompts_fts'`,
+    const row = await queryOne<{ name: string }>(
+      `SELECT name FROM sqlite_master WHERE type='table' AND name='prompts_fts'`,
     );
+    ftsCache = !!row;
   }
   return ftsCache;
 }
 
 export const promptRepo = {
-  byId(id: string): PromptRecord | undefined {
-    const row = queryOne<PromptRow>(
+  async byId(id: string): Promise<PromptRecord | undefined> {
+    const row = await queryOne<PromptRow>(
       `SELECT ${PROMPT_COLS} FROM prompts WHERE id = ?`,
       id,
     );
     return row ? rowToPrompt(row) : undefined;
   },
 
-  allPublished(): PromptRecord[] {
-    return query<PromptRow>(
+  async allPublished(): Promise<PromptRecord[]> {
+    const rows = await query<PromptRow>(
       `SELECT ${PROMPT_COLS} FROM prompts WHERE status = 'published'`,
-    ).map(rowToPrompt);
+    );
+    return rows.map(rowToPrompt);
   },
 
-  trending(limit = 8): PromptRecord[] {
-    return cached(`trending:${limit}`, 120_000, () =>
-      query<PromptRow>(
+  async trending(limit = 8): Promise<PromptRecord[]> {
+    return cached(`trending:${limit}`, 120_000, async () => {
+      const rows = await query<PromptRow>(
         `SELECT ${PROMPT_COLS} FROM prompts WHERE status = 'published'
          ORDER BY usage_count * (0.5 + rating / 5) DESC LIMIT ?`,
         limit,
-      ).map(rowToPrompt),
-    );
+      );
+      return rows.map(rowToPrompt);
+    });
   },
 
-  recent(limit = 8): PromptRecord[] {
-    return cached(`recent:${limit}`, 120_000, () =>
-      query<PromptRow>(
+  async recent(limit = 8): Promise<PromptRecord[]> {
+    return cached(`recent:${limit}`, 120_000, async () => {
+      const rows = await query<PromptRow>(
         `SELECT ${PROMPT_COLS} FROM prompts WHERE status = 'published'
          ORDER BY created_at DESC LIMIT ?`,
         limit,
-      ).map(rowToPrompt),
-    );
+      );
+      return rows.map(rowToPrompt);
+    });
   },
 
-  featured(limit = 4): PromptRecord[] {
-    return cached(`featured:${limit}`, 120_000, () =>
-      query<PromptRow>(
+  async featured(limit = 4): Promise<PromptRecord[]> {
+    return cached(`featured:${limit}`, 120_000, async () => {
+      const rows = await query<PromptRow>(
         `SELECT ${PROMPT_COLS} FROM prompts WHERE status = 'published' AND is_featured = 1
          ORDER BY usage_count DESC LIMIT ?`,
         limit,
-      ).map(rowToPrompt),
-    );
+      );
+      return rows.map(rowToPrompt);
+    });
   },
 
-  countsByCategory(): Record<string, number> {
-    return cached("countsByCategory", 120_000, () => {
-      const rows = query<{ category: string; n: number }>(
+  async countsByCategory(): Promise<Record<string, number>> {
+    return cached("countsByCategory", 120_000, async () => {
+      const rows = await query<{ category: string; n: number }>(
         `SELECT category, COUNT(*) AS n FROM prompts WHERE status='published' GROUP BY category`,
       );
       return Object.fromEntries(rows.map((r) => [r.category, Number(r.n)]));
     });
   },
 
-  /** Cheap aggregate used for popularity normalization (60s TTL cache). */
-  popularityMax(): number {
+  async popularityMax(): Promise<number> {
     const now = Date.now();
     if (!popMaxCache.value || now - popMaxCache.at > 60_000) {
-      const row = queryOne<{ usage_count: number }>(
+      const row = await queryOne<{ usage_count: number }>(
         `SELECT usage_count FROM prompts WHERE status='published' ORDER BY usage_count DESC LIMIT 1`,
       );
       popMaxCache.value = Number(row?.usage_count ?? 0) || 1;
@@ -238,32 +232,26 @@ export const promptRepo = {
     return popMaxCache.value;
   },
 
-  /** Hydrate full rows (bodies included) for a bounded id set. */
-  byIds(ids: string[]): PromptRecord[] {
+  async byIds(ids: string[]): Promise<PromptRecord[]> {
     if (ids.length === 0) return [];
     const placeholders = ids.map(() => "?").join(",");
-    return query<PromptRow>(
+    const rows = await query<PromptRow>(
       `SELECT ${PROMPT_COLS} FROM prompts WHERE id IN (${placeholders})`,
       ...ids,
-    ).map(rowToPrompt);
+    );
+    return rows.map(rowToPrompt);
   },
 
-  /**
-   * Scale-safe candidate retrieval. Instead of loading every published prompt
-   * into JS, push filtering + text matching + ordering down to SQLite and
-   * return only a bounded candidate set for hybrid re-ranking upstream.
-   */
-  candidatesFor(opts: {
+  async candidatesFor(opts: {
     tokens?: string[];
     filters?: SearchFilters;
     sort?: SortOption;
     limit?: number;
-    /** Fetch fat columns too (bodies/variables) — only for small sets. */
     full?: boolean;
-  }): PromptRecord[] {
+  }): Promise<PromptRecord[]> {
     const limit = Math.min(Math.max(opts.limit ?? 1200, 1), 5000);
     const cols = opts.full ? PROMPT_COLS : LIGHT_COLS;
-    const map = opts.full
+    const mapFn = opts.full
       ? (rows: PromptRow[]) => rows.map(rowToPrompt)
       : (rows: PromptRow[]) => rows.map(rowToLight);
     const where: string[] = [`p.status = 'published'`];
@@ -296,41 +284,31 @@ export const promptRepo = {
 
     const tokens = (opts.tokens ?? []).filter((t) => t.length >= 2).slice(0, 8);
 
-    // Full-text path — millisecond retrieval even at hundreds of thousands
-    // of rows. Deliberately skips SQL-side ranking (bm25 across tens of
-    // thousands of matches costs ~500ms): pull a bounded id pool, fetch
-    // narrow rows, and let the caller's scorer pick winners.
-    if (tokens.length > 0 && ftsAvailable()) {
+    if (tokens.length > 0 && (await ftsAvailable())) {
       const match = tokens.map((t) => `"${t.replace(/"/g, "")}"`).join(" OR ");
       const poolCap = Math.min(Math.max(limit * 4, 4000), 8000);
-      const idRows = query<{ id: string }>(
+      const idRows = await query<{ id: string }>(
         `SELECT id FROM prompts_fts WHERE prompts_fts MATCH ? LIMIT ${poolCap}`,
         match,
       );
       if (idRows.length === 0) return [];
-      const cols = opts.full ? PROMPT_COLS : LIGHT_COLS;
-      const map = opts.full
-        ? (rows: PromptRow[]) => rows.map(rowToPrompt)
-        : (rows: PromptRow[]) => rows.map(rowToLight);
       const rows: PromptRow[] = [];
       for (let i = 0; i < idRows.length; i += 500) {
         const chunk = idRows.slice(i, i + 500).map((r) => r.id);
-        rows.push(
-          ...query<PromptRow>(
-            `SELECT ${cols} FROM prompts p WHERE p.id IN (${chunk.map(() => "?").join(",")})`,
-            ...chunk,
-          ),
+        const chunkRows = await query<PromptRow>(
+          `SELECT ${cols} FROM prompts p WHERE p.id IN (${chunk.map(() => "?").join(",")})`,
+          ...chunk,
         );
+        rows.push(...chunkRows);
       }
       const filtered = rows.filter((r) => matchesJsFilters(r, f));
       if (opts.sort && opts.sort !== "relevance") {
         const key = JS_SORT_KEYS[opts.sort];
         filtered.sort((a, b) => key(b) - key(a));
       }
-      return map(filtered.slice(0, limit));
+      return mapFn(filtered.slice(0, limit));
     }
 
-    // LIKE fallback when FTS is unavailable; also covers the no-token browse case.
     if (tokens.length > 0) {
       where.push(`(${tokens.map(() => `p.search_text LIKE ?`).join(" OR ")})`);
       params.push(...tokens.map((t) => `%${t}%`));
@@ -338,23 +316,21 @@ export const promptRepo = {
     const order = SORT_ORDERS[opts.sort ?? "relevance"];
     const sql =
       `SELECT ${cols} FROM prompts p WHERE ${where.join(" AND ")} ORDER BY ${order} LIMIT ${limit}`;
-    return map(query<PromptRow>(sql, ...params));
+    const rows = await query<PromptRow>(sql, ...params);
+    return mapFn(rows);
   },
 
-  /**
-   * Bounded corpus sample for TF-IDF training — full-corpus IDF statistics
-   * are approximated from curated prompts plus the most-used generated ones.
-   */
-  embeddingSample(limit = 6000): PromptRecord[] {
-    return query<PromptRow>(
+  async embeddingSample(limit = 6000): Promise<PromptRecord[]> {
+    const rows = await query<PromptRow>(
       `SELECT ${PROMPT_COLS} FROM prompts WHERE status = 'published'
        ORDER BY (source = 'seed') DESC, usage_count DESC LIMIT ?`,
       Math.min(limit, 20000),
-    ).map(rowToPrompt);
+    );
+    return rows.map(rowToPrompt);
   },
 
-  insert(p: PromptRecord): void {
-    run(
+  async insert(p: PromptRecord): Promise<void> {
+    await run(
       `INSERT INTO prompts (${PROMPT_COLS}) VALUES (${PROMPT_COLS.split(",").map(() => "?").join(",")})`,
       p.id, p.title, p.description, p.category, p.subcategory,
       JSON.stringify(p.tasks), JSON.stringify(p.tags), p.difficulty,
@@ -376,15 +352,12 @@ export const promptRepo = {
     );
   },
 
-  updateEditable(
+  async updateEditable(
     id: string,
     fields: Partial<
-      Pick<
-        PromptRecord,
-        "title" | "description" | "promptText" | "tags" | "difficulty" | "updatedAt"
-      >
+      Pick<PromptRecord, "title" | "description" | "promptText" | "tags" | "difficulty" | "updatedAt">
     >,
-  ): void {
+  ): Promise<void> {
     const sets: string[] = [];
     const vals: (string | number)[] = [];
     if (fields.title !== undefined) { sets.push("title=?"); vals.push(fields.title); }
@@ -395,21 +368,21 @@ export const promptRepo = {
     sets.push("updated_at=?");
     vals.push(fields.updatedAt ?? new Date().toISOString());
     vals.push(id);
-    run(`UPDATE prompts SET ${sets.join(", ")} WHERE id=?`, ...vals);
+    await run(`UPDATE prompts SET ${sets.join(", ")} WHERE id=?`, ...vals);
   },
 
-  incrementUsage(id: string): void {
-    run(`UPDATE prompts SET usage_count = usage_count + 1 WHERE id=?`, id);
+  async incrementUsage(id: string): Promise<void> {
+    await run(`UPDATE prompts SET usage_count = usage_count + 1 WHERE id=?`, id);
   },
 };
 
 // ---------- Taxonomy ----------
 
-export function listCategories(): CategoryRecord[] {
-  const cats = query<{ id: string; name: string; icon: string; color: string; sort: number }>(
+export async function listCategories(): Promise<CategoryRecord[]> {
+  const cats = await query<{ id: string; name: string; icon: string; color: string; sort: number }>(
     `SELECT id, name, icon, color, sort FROM categories ORDER BY sort`,
   );
-  const subs = query<{ category_id: string; name: string; id: string }>(
+  const subs = await query<{ category_id: string; name: string; id: string }>(
     `SELECT category_id, id, name FROM subcategories ORDER BY name`,
   );
   return cats.map((c) => ({
@@ -422,16 +395,18 @@ export function listCategories(): CategoryRecord[] {
   }));
 }
 
-export function listPlatforms(): PlatformRecord[] {
-  return query<PlatformRecord & { sort: number }>(
+export async function listPlatforms(): Promise<PlatformRecord[]> {
+  const rows = await query<PlatformRecord & { sort: number }>(
     `SELECT id, name, color, note, sort FROM platforms ORDER BY sort`,
-  ).map(({ sort: _sort, ...p }) => p);
+  );
+  return rows.map(({ sort: _sort, ...p }) => p);
 }
 
-export function listCommands(): CommandRecord[] {
-  return query<{ cmd: string; label: string; description: string; intent_patch: string }>(
+export async function listCommands(): Promise<CommandRecord[]> {
+  const rows = await query<{ cmd: string; label: string; description: string; intent_patch: string }>(
     `SELECT cmd, label, description, intent_patch FROM commands ORDER BY cmd`,
-  ).map((c) => ({ ...c, intentPatch: parseJson(c.intent_patch, {}) }));
+  );
+  return rows.map((c) => ({ ...c, intentPatch: parseJson(c.intent_patch, {}) }));
 }
 
 // ---------- Workflows ----------
@@ -463,25 +438,26 @@ function rowToWorkflow(r: WorkflowRow): WorkflowRecord {
 }
 
 export const workflowRepo = {
-  list(): WorkflowRecord[] {
-    return query<WorkflowRow>(
+  async list(): Promise<WorkflowRecord[]> {
+    const rows = await query<WorkflowRow>(
       `SELECT * FROM workflows ORDER BY is_featured DESC, usage_count DESC`,
-    ).map(rowToWorkflow);
+    );
+    return rows.map(rowToWorkflow);
   },
-  byId(id: string): WorkflowRecord | undefined {
-    const row = queryOne<WorkflowRow>(`SELECT * FROM workflows WHERE id = ?`, id);
+  async byId(id: string): Promise<WorkflowRecord | undefined> {
+    const row = await queryOne<WorkflowRow>(`SELECT * FROM workflows WHERE id = ?`, id);
     return row ? rowToWorkflow(row) : undefined;
   },
-  insert(w: Omit<WorkflowRecord, never>): void {
-    run(
+  async insert(w: Omit<WorkflowRecord, never>): Promise<void> {
+    await run(
       `INSERT INTO workflows (id, name, description, category, steps, usage_count, is_featured, author, created_at)
        VALUES (?,?,?,?,?,?,?,?,?)`,
       w.id, w.name, w.description, w.category, JSON.stringify(w.steps),
       w.usageCount, w.isFeatured ? 1 : 0, w.author, w.createdAt,
     );
   },
-  incrementUsage(id: string): void {
-    run(`UPDATE workflows SET usage_count = usage_count + 1 WHERE id=?`, id);
+  async incrementUsage(id: string): Promise<void> {
+    await run(`UPDATE workflows SET usage_count = usage_count + 1 WHERE id=?`, id);
   },
 };
 
@@ -495,8 +471,8 @@ export interface EventRowIn {
 }
 
 export const eventRepo = {
-  log(e: EventRowIn): void {
-    run(
+  async log(e: EventRowIn): Promise<void> {
+    await run(
       `INSERT INTO events (type, prompt_id, outcome, meta, created_at) VALUES (?,?,?,?,?)`,
       e.type, e.promptId ?? null, e.outcome ?? null,
       JSON.stringify(e.meta ?? {}), new Date().toISOString(),

@@ -7,6 +7,7 @@ import {
 import { searchPrompts } from "@/lib/services/searchService";
 import { parseIntent } from "@/lib/services/intentService";
 import { listCommands, eventRepo } from "@/lib/db/repositories";
+import { ensureSeeded } from "@/lib/db/connection";
 
 export const runtime = "nodejs";
 
@@ -32,8 +33,8 @@ function applyPatch(intent: IntentAnalysis, patch: Partial<IntentAnalysis>): Int
 }
 
 /** Same decision pipeline as matchService.findMatch, for a pre-built intent. */
-function decideFromIntent(intent: IntentAnalysis): FindDecision {
-  const { results } = searchPrompts(intent);
+async function decideFromIntent(intent: IntentAnalysis): Promise<FindDecision> {
+  const { results } = await searchPrompts(intent);
   let verdict: FindDecision["verdict"] = decideVerdict(results);
   const suggestionWorkflow = detectComposition(intent, results);
   if (suggestionWorkflow && verdict !== "strong") verdict = "compose";
@@ -58,6 +59,7 @@ function decideFromIntent(intent: IntentAnalysis): FindDecision {
 }
 
 export async function POST(req: NextRequest) {
+  await ensureSeeded();
   const body = (await req.json().catch(() => ({}))) as {
     query?: string;
     command?: string;
@@ -69,14 +71,15 @@ export async function POST(req: NextRequest) {
 
   let intent = parseIntent(query);
   if (body.command) {
-    const cmd = listCommands().find((c) => c.cmd === body.command);
+    const commands = await listCommands();
+    const cmd = commands.find((c) => c.cmd === body.command);
     if (cmd) intent = applyPatch(intent, cmd.intentPatch);
   }
 
-  const decision = decideFromIntent(intent);
+  const decision = await decideFromIntent(intent);
 
   try {
-    eventRepo.log({
+    await eventRepo.log({
       type: "search",
       outcome: decision.verdict,
       meta: {
