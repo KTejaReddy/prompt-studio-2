@@ -1,0 +1,16 @@
+node_modules
+.next
+out
+*.tsbuildinfo
+next-env.d.ts
+data/*.sqlite*
+.env*
+.DS_Store
+
+.big.log
+.run.log
+.wf.html
+.relcheck.mjs
+.freebuff/
+shots/
+tests/

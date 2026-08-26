@@ -1,0 +1,196 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ---------------------------------------------------------------------------
+   Promptly "Market" — structural multicolor light theme.
+   Ten color families used as real design regions. Light-only by design:
+   color-scheme is pinned so OS/browser dark preferences never darken anything.
+--------------------------------------------------------------------------- */
+:root,
+html {
+  color-scheme: light;
+  /* CTA gradient for component classes (backgroundImage can't be @apply-ed). */
+  --grad-cta: linear-gradient(100deg, #22b8cd 0%, #31c7b5 52%, #6fd8b5 100%);
+  --grad-edge: linear-gradient(90deg, #22b8cd 0%, #31c7b5 34%, #54b8e8 67%, #6fd8b5 100%);
+}
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply bg-paper text-ink antialiased;
+  }
+
+  ::selection {
+    @apply bg-cyan text-white;
+  }
+
+  h1,
+  h2,
+  h3 {
+    @apply tracking-tight;
+  }
+
+  input,
+  textarea,
+  select {
+    @apply outline-none;
+  }
+
+  :focus-visible {
+    outline: 2px solid #22b8cd;
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+
+  .hero-input {
+    caret-color: #22b8cd;
+  }
+}
+
+@layer components {
+  .card {
+    @apply rounded-xl2 bg-white shadow-soft ring-1 ring-ink/5 transition-all duration-200 hover:shadow-lift;
+  }
+
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-full px-4 py-2 text-sm font-semibold transition-all duration-150 disabled:pointer-events-none disabled:opacity-50;
+  }
+
+  /* Generic primary CTA — the coral → pink → orange gradient */
+  .btn-primary {
+    @apply btn text-white shadow-glow hover:-translate-y-px hover:brightness-[1.04] active:translate-y-0 active:scale-[0.98];
+    background-image: var(--grad-cta);
+  }
+
+  /* ---- Semantic purpose colors — the theme is cyan-led ---- */
+  .btn-find {
+    @apply btn bg-cyan text-white shadow-glow hover:-translate-y-px hover:brightness-[1.05] active:scale-[0.98];
+  }
+  .btn-generate {
+    @apply btn text-white shadow-glow hover:-translate-y-px hover:brightness-[1.05] active:scale-[0.98];
+    background-image: linear-gradient(100deg, #22b8cd 0%, #54b8e8 100%);
+  }
+  .btn-explore {
+    @apply btn bg-turquoise text-white shadow-glow hover:-translate-y-px hover:brightness-[1.05] active:scale-[0.98];
+  }
+  .btn-save {
+    @apply btn bg-cyan-soft text-cyan-deep ring-1 ring-cyan/30 shadow-soft hover:-translate-y-px hover:bg-cyan-soft/70 active:scale-[0.98];
+  }
+
+  .btn-secondary {
+    @apply btn bg-white text-ink ring-1 ring-cyan/25 hover:bg-cyan-soft/40 active:scale-[0.98];
+  }
+
+  .btn-ghost {
+    @apply btn text-ink-soft hover:bg-cyan-soft/60 hover:text-ink;
+  }
+
+  .field {
+    @apply w-full rounded-xl border-0 bg-white px-3.5 py-2.5 text-sm text-ink ring-1 ring-ink/10 placeholder:text-ink-faint focus:bg-white focus:ring-2 focus:ring-cyan;
+  }
+
+  .chip {
+    @apply inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 font-mono text-[11px] font-medium uppercase tracking-wide;
+  }
+
+  /* Section eyebrow: colored dash + mono label. Color varies per section. */
+  .eyebrow {
+    @apply inline-flex items-center gap-2 font-mono text-xs font-semibold uppercase tracking-widest text-ink-mute;
+  }
+  .eyebrow::before {
+    content: "";
+    @apply inline-block h-2 w-2 rounded-full;
+    background: var(--grad-edge);
+  }
+
+  /* ---- Atmospheric hero band: cyan-led color fields ---- */
+  .hero-atmosphere {
+    background:
+      radial-gradient(42rem 26rem at 6% -12%, rgba(34, 184, 205, 0.18) 0%, transparent 62%),
+      radial-gradient(40rem 26rem at 96% -4%, rgba(49, 199, 181, 0.16) 0%, transparent 62%),
+      radial-gradient(46rem 28rem at 50% 46%, rgba(111, 216, 181, 0.15) 0%, transparent 64%),
+      radial-gradient(38rem 28rem at -4% 100%, rgba(34, 184, 205, 0.14) 0%, transparent 60%),
+      radial-gradient(30rem 22rem at 102% 102%, rgba(84, 184, 232, 0.10) 0%, transparent 60%);
+  }
+
+  /* ---- Search deck: cyan outer + white well + cyan-family edge ---- */
+  .search-deck {
+    @apply rounded-2xl bg-cyan-surface p-3 ring-1 ring-cyan/15 shadow-searchGlow transition-all duration-200;
+  }
+  .search-deck:focus-within {
+    @apply ring-2 ring-cyan/40;
+    box-shadow:
+      0 2px 6px rgba(34, 184, 205, 0.08),
+      0 16px 50px rgba(34, 184, 205, 0.18),
+      0 30px 90px rgba(49, 199, 181, 0.14);
+  }
+  .search-well {
+    @apply rounded-xl bg-white;
+  }
+  .edge-strip {
+    @apply mt-3 h-1.5 rounded-full opacity-80;
+    background: var(--grad-edge);
+  }
+
+  /* Staged find progress dots */
+  .step-dot {
+    @apply inline-block h-2.5 w-2.5 rounded-full;
+    animation: step-pulse 1.8s ease-in-out infinite;
+  }
+
+  /* {VARIABLE} highlights inside prompt bodies */
+  .var {
+    @apply rounded-md px-1 py-0.5 font-mono text-[0.85em] font-bold;
+  }
+  .var-coral {
+    @apply var bg-coral-soft text-coral-deep;
+  }
+  .var-teal {
+    @apply var bg-turquoise-soft text-turquoise-deep;
+  }
+  .var-pink {
+    @apply var bg-cyan-soft text-cyan-deep;
+  }
+  .var-orange {
+    @apply var bg-orange-soft text-orange-deep;
+  }
+  .var-lavender {
+    @apply var bg-lavender-soft text-lavender-deep;
+  }
+
+  /* Organic blobs — used sparingly behind page atmospheres (§22) */
+  .blob {
+    @apply pointer-events-none absolute rounded-full;
+    filter: blur(64px);
+    opacity: 0.55;
+  }
+  .blob-peach {
+    @apply blob bg-[#FFD9C2];
+  }
+  .blob-mint {
+    @apply blob bg-[#C9F2E6];
+  }
+  .blob-lilac {
+    @apply blob bg-[#E6DBFE];
+  }
+  .blob-pink {
+    @apply blob bg-[#FFD3E8];
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+  html {
+    scroll-behavior: auto;
+  }
+}
