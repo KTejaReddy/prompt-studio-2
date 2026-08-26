@@ -10,8 +10,13 @@ import { seedDatabase } from "./seed";
  * Postgres or another engine later means reimplementing this file only.
  */
 
-const DATA_DIR = path.join(process.cwd(), "data");
+const DATA_DIR = process.env.VERCEL
+  ? path.join("/tmp", "promptly-data")
+  : path.join(process.cwd(), "data");
 const DB_PATH = process.env.PROMPTLY_DB ?? path.join(DATA_DIR, "promptly.sqlite");
+
+/** Vercel serverless has limited RAM and a read-only root fs (only /tmp is writable). */
+const IS_VERCEL = !!process.env.VERCEL;
 
 declare global {
   // eslint-disable-next-line no-var
@@ -23,13 +28,19 @@ function openDatabase(): DatabaseSync {
   const db = new DatabaseSync(DB_PATH);
   db.exec("PRAGMA journal_mode = WAL;");
   db.exec("PRAGMA foreign_keys = ON;");
-  // Performance pragmas for the multi-GB corpus: a real page cache plus
-  // memory-mapped I/O keep repeat reads of hot pages at memory speed.
-  db.exec("PRAGMA cache_size = -65536;"); // 64 MiB page cache
-  db.exec("PRAGMA mmap_size = 805306368;"); // memory-map 768 MiB of the file
-  db.exec("PRAGMA synchronous = NORMAL;"); // WAL-safe, far fewer fsyncs
-  db.exec("PRAGMA temp_store = MEMORY;"); // temp tables in RAM
-  db.exec("PRAGMA optimize"); // rebuild query planner stats
+  if (IS_VERCEL) {
+    // Vercel serverless: lean pragmas, no mmap, small cache.
+    db.exec("PRAGMA cache_size = -8192;"); // 8 MiB page cache
+    db.exec("PRAGMA synchronous = NORMAL;");
+    db.exec("PRAGMA temp_store = MEMORY;");
+  } else {
+    // Local / self-hosted: aggressive caching for the multi-GB corpus.
+    db.exec("PRAGMA cache_size = -65536;"); // 64 MiB page cache
+    db.exec("PRAGMA mmap_size = 805306368;"); // memory-map 768 MiB of the file
+    db.exec("PRAGMA synchronous = NORMAL;");
+    db.exec("PRAGMA temp_store = MEMORY;");
+    db.exec("PRAGMA optimize");
+  }
   return db;
 }
 
@@ -47,6 +58,19 @@ function getDb(): DatabaseSync {
     globalThis.__promptlyDb = db;
   }
   return globalThis.__promptlyDb;
+}
+
+/**
+ * On Vercel serverless the /tmp DB is ephemeral — seeded fresh on each cold
+ * start. Expose a quick health check so the home page can verify the DB.
+ */
+export function isDbReady(): boolean {
+  try {
+    const r = getDb().prepare("SELECT 1").get();
+    return !!r;
+  } catch {
+    return false;
+  }
 }
 
 /**
