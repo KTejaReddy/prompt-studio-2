@@ -1,0 +1,16 @@
+{
+  "functions": {
+    "src/app/api/**/*.{ts,tsx}": {
+      "runtime": "nodejs22.x"
+    },
+    "src/app/prompt/[id]/page.tsx": {
+      "runtime": "nodejs22.x"
+    },
+    "src/app/page.tsx": {
+      "runtime": "nodejs22.x"
+    },
+    "src/app/explore/page.tsx": {
+      "runtime": "nodejs22.x"
+    }
+  }
+}
