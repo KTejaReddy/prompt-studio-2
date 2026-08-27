@@ -17,12 +17,13 @@ export default async function ExplorePage({
   const category = searchParams.category ?? "";
 
   // Server-side: fetch initial results using the lightweight browse query
-  const [initialPrompts, categories, platforms] = await Promise.all([
+  const [initialPrompts, totalCount, categories, platforms] = await Promise.all([
     promptRepo.browse({
       category: category || undefined,
       sort: "popular",
-      limit: 36,
+      limit: 48,
     }),
+    promptRepo.countBrowse({ category: category || undefined }),
     listCategories(),
     listPlatforms(),
   ]);
@@ -57,6 +58,7 @@ export default async function ExplorePage({
         initialResults={initialResults}
         initialCategories={categories}
         initialPlatforms={platforms}
+        initialTotal={totalCount}
       />
     </div>
   );

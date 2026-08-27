@@ -338,15 +338,12 @@ export const promptRepo = {
     );
     return rows.map(rowToLight);
   },
-  /** Lightweight browse — no heavy text fields, no FTS, no scoring. */
-  async browse(opts: {
+  /** Build WHERE clause for browse filters. */
+  buildBrowseWhere(opts: {
     category?: string;
     difficulty?: string[];
     platform?: string[];
-    sort?: SortOption;
-    limit?: number;
-  } = {}): Promise<PromptRecord[]> {
-    const limit = Math.min(opts.limit ?? 36, 100);
+  }): { where: string[]; params: (string | number)[] } {
     const where = ["status = 'published'"];
     const params: (string | number)[] = [];
     if (opts.category) {
@@ -361,8 +358,38 @@ export const promptRepo = {
       where.push(`platforms LIKE ?`);
       for (const pl of opts.platform) params.push(`%"${pl}"%`);
     }
+    return { where, params };
+  },
+
+  /** Count published prompts matching browse filters. Cached 60s. */
+  async countBrowse(opts: {
+    category?: string;
+    difficulty?: string[];
+    platform?: string[];
+  } = {}): Promise<number> {
+    const key = `countBrowse:${JSON.stringify(opts)}`;
+    return cached(key, 60_000, async () => {
+      const { where, params } = this.buildBrowseWhere(opts);
+      const sql = `SELECT COUNT(*) AS n FROM prompts p WHERE ${where.join(" AND ")}`;
+      const row = await queryOne<{ n: number }>(sql, ...params);
+      return Number(row?.n ?? 0);
+    });
+  },
+
+  /** Lightweight browse — no heavy text fields, no FTS, no scoring. */
+  async browse(opts: {
+    category?: string;
+    difficulty?: string[];
+    platform?: string[];
+    sort?: SortOption;
+    limit?: number;
+    offset?: number;
+  } = {}): Promise<PromptRecord[]> {
+    const limit = Math.min(opts.limit ?? 48, 200);
+    const offset = Math.max(opts.offset ?? 0, 0);
+    const { where, params } = this.buildBrowseWhere(opts);
     const order = SORT_ORDERS[opts.sort ?? "popular"];
-    const sql = `SELECT ${BROWSE_COLS} FROM prompts p WHERE ${where.join(" AND ")} ORDER BY ${order} LIMIT ${limit}`;
+    const sql = `SELECT ${BROWSE_COLS} FROM prompts p WHERE ${where.join(" AND ")} ORDER BY ${order} LIMIT ${limit} OFFSET ${offset}`;
     const rows = await query<PromptRow>(sql, ...params);
     return rows.map(rowToLight);
   },

@@ -45,10 +45,12 @@ function getClient(): Client {
  */
 export async function ensureSeeded(): Promise<void> {
   if (globalThis.__promptlySeeded) return;
+  // Use sqlite_master as a zero-row heuristic — much cheaper than COUNT(*) on 220k rows.
   const client = getClient();
-  const row = await client.execute("SELECT COUNT(*) AS n FROM prompts");
-  const count = Number(row.rows[0]?.n ?? 0);
-  if (count > 0) {
+  const table = await client.execute(
+    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='prompts' LIMIT 1",
+  );
+  if (table.rows.length > 0) {
     globalThis.__promptlySeeded = true;
     return;
   }

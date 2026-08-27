@@ -23,7 +23,8 @@ export async function GET(req: NextRequest) {
   const q = (p.get("q") ?? "").trim();
 
   const sort = (p.get("sort") as SortOption | null) ?? "relevance";
-  const limit = Math.min(Number(p.get("limit")) || 24, 60);
+  const limit = Math.min(Number(p.get("limit")) || 48, 200);
+  const offset = Math.max(Number(p.get("offset")) || 0, 0);
 
   // Fast path: no query → lightweight browse (avoids importing heavy search modules)
   if (!q) {
@@ -31,13 +32,17 @@ export async function GET(req: NextRequest) {
     const difficulty = list(p, "difficulty") as Difficulty[] | undefined;
     const platform = list(p, "platform");
 
-    const prompts = await promptRepo.browse({
-      category,
-      difficulty,
-      platform,
-      sort: sort === "relevance" ? "popular" : sort,
-      limit,
-    });
+    const [prompts, total] = await Promise.all([
+      promptRepo.browse({
+        category,
+        difficulty,
+        platform,
+        sort: sort === "relevance" ? "popular" : sort,
+        limit,
+        offset,
+      }),
+      promptRepo.countBrowse({ category, difficulty, platform }),
+    ]);
 
     const results = prompts.map((prompt) => ({
       prompt,
@@ -49,7 +54,7 @@ export async function GET(req: NextRequest) {
     }));
 
     return NextResponse.json(
-      { results, total: results.length },
+      { results, total },
       { headers: CACHE_HEADER as unknown as Record<string, string> },
     );
   }
