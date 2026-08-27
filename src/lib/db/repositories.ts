@@ -173,7 +173,7 @@ async function ftsAvailable(): Promise<boolean> {
 export const promptRepo = {
   async byId(id: string): Promise<PromptRecord | undefined> {
     const row = await queryOne<PromptRow>(
-      `SELECT ${PROMPT_COLS} FROM prompts WHERE id = ?`,
+      `SELECT ${PROMPT_COLS} FROM prompts p WHERE id = ?`,
       id,
     );
     return row ? rowToPrompt(row) : undefined;
