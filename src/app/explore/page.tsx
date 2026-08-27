@@ -26,7 +26,7 @@ export default async function ExplorePage({
       promptRepo.browse({
         category: category || undefined,
         sort: "popular",
-        limit: 48,
+        limit: 40,
       }),
       promptRepo.countBrowse({ category: category || undefined }),
       listCategories(),

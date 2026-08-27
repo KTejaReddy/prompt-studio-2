@@ -1,7 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useVirtualizer } from "@tanstack/react-virtual";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type {
   CategoryRecord,
   Difficulty,
@@ -11,7 +10,7 @@ import type {
 import { PromptCard } from "@/components/PromptCard";
 
 const DIFFICULTIES: Difficulty[] = ["beginner", "intermediate", "advanced"];
-const PAGE_SIZE = 48;
+const PER_PAGE = 40;
 
 const SORTS = [
   { id: "relevance", label: "Relevance" },
@@ -44,15 +43,12 @@ export function ExploreClient({
   const [sort, setSort] = useState<(typeof SORTS)[number]["id"]>("relevance");
   const [results, setResults] = useState<ScoredPrompt[]>(initialResults);
   const [total, setTotal] = useState(initialTotal);
+  const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(false);
-  const [loadingMore, setLoadingMore] = useState(false);
-  const [showTop, setShowTop] = useState(false);
   const [categories] = useState<CategoryRecord[]>(initialCategories);
   const [platformList] = useState<PlatformRecord[]>(initialPlatforms);
-  const offsetRef = useRef(initialResults.length);
-  const abortRef = useRef<AbortController | null>(null);
-  const isInitialMount = useRef(true);
-  const parentRef = useRef<HTMLDivElement>(null);
+
+  const totalPages = Math.max(1, Math.ceil(total / PER_PAGE));
 
   // Debounce the search box.
   useEffect(() => {
@@ -60,65 +56,45 @@ export function ExploreClient({
     return () => clearTimeout(t);
   }, [query]);
 
-  // Back-to-top visibility
-  useEffect(() => {
-    const onScroll = () => setShowTop(window.scrollY > 600);
-    window.addEventListener("scroll", onScroll, { passive: true });
-    return () => window.removeEventListener("scroll", onScroll);
-  }, []);
-
-  const hasMore = results.length < total;
-
+  // Fetch a page from the API
   const fetchPage = useCallback(
-    async (offset: number, append: boolean) => {
-      abortRef.current?.abort();
-      const ctrl = new AbortController();
-      abortRef.current = ctrl;
-      if (append) setLoadingMore(true);
-      else setLoading(true);
+    async (pageNum: number) => {
+      setLoading(true);
       try {
+        const offset = (pageNum - 1) * PER_PAGE;
         const p = new URLSearchParams();
         if (debounced.trim()) p.set("q", debounced.trim());
         if (category) p.set("category", category);
         if (difficulties.length) p.set("difficulty", difficulties.join(","));
         if (platforms.length) p.set("platform", platforms.join(","));
         p.set("sort", sort);
-        p.set("limit", String(PAGE_SIZE));
+        p.set("limit", String(PER_PAGE));
         if (offset > 0) p.set("offset", String(offset));
-        const res = await fetch(`/api/search?${p.toString()}`, {
-          signal: ctrl.signal,
-        });
+        const res = await fetch(`/api/search?${p.toString()}`);
         const data = await res.json();
-        const newResults: ScoredPrompt[] = data.results ?? [];
-        if (append) {
-          setResults((prev) => [...prev, ...newResults]);
-        } else {
-          setResults(newResults);
-        }
-        setTotal(data.total ?? newResults.length);
-        offsetRef.current = append ? offset + newResults.length : newResults.length;
+        setResults(data.results ?? []);
+        setTotal(data.total ?? 0);
       } catch {
-        /* aborted */
+        /* ignore */
       } finally {
-        if (!ctrl.signal.aborted) {
-          setLoading(false);
-          setLoadingMore(false);
-        }
+        setLoading(false);
       }
     },
     [debounced, category, difficulties, platforms, sort],
   );
 
-  // Reset & fetch first page when filters change
+  // Reset to page 1 when filters change
   useEffect(() => {
-    if (isInitialMount.current) {
-      isInitialMount.current = false;
-      if (!initialQuery.trim() && !initialCategory) return;
-    }
-    offsetRef.current = 0;
-    fetchPage(0, false);
-    return () => abortRef.current?.abort();
-  }, [fetchPage, initialQuery, initialCategory]);
+    setPage(1);
+    fetchPage(1);
+  }, [fetchPage]);
+
+  function goToPage(p: number) {
+    if (p < 1 || p > totalPages) return;
+    setPage(p);
+    fetchPage(p);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
 
   function toggle<T>(list: T[], v: T, set: (l: T[]) => void) {
     set(list.includes(v) ? list.filter((x) => x !== v) : [...list, v]);
@@ -129,36 +105,25 @@ export function ExploreClient({
     [categories, category],
   );
 
-  // --- Virtualization ---
-  const COLS = 3; // xl:grid-cols-3
-
-  const rowVirtualizer = useVirtualizer({
-    count: total,
-    getScrollElement: () => parentRef.current,
-    estimateSize: () => 220, // approximate card height in px
-    overscan: 10, // render 10 extra rows above/below viewport for smoother scrolling
-  });
-
-  // Map virtual row index → prompt data (filled as pages load)
-  const promptByIndex = useMemo(() => {
-    const map = new Map<number, ScoredPrompt>();
-    results.forEach((r, i) => map.set(i, r));
-    return map;
-  }, [results]);
-
-  const virtualRows = rowVirtualizer.getVirtualItems();
-
-  // Pre-fetch next page when user scrolls near the end
-  useEffect(() => {
-    const lastVirtual = virtualRows[virtualRows.length - 1];
-    if (!lastVirtual) return;
-    // When user scrolls within 3 rows of the end, fetch more
-    if (lastVirtual.index >= results.length - COLS * 5 && hasMore && !loadingMore && !loading) {
-      fetchPage(offsetRef.current, true);
+  // Build page number array: show first, last, and nearby pages with ellipsis
+  function pageNumbers(): (number | "...")[] {
+    const pages: (number | "...")[] = [];
+    if (totalPages <= 7) {
+      for (let i = 1; i <= totalPages; i++) pages.push(i);
+      return pages;
     }
-  }, [virtualRows, results.length, hasMore, loadingMore, loading, fetchPage]);
+    pages.push(1);
+    if (page > 3) pages.push("...");
+    const start = Math.max(2, page - 1);
+    const end = Math.min(totalPages - 1, page + 1);
+    for (let i = start; i <= end; i++) pages.push(i);
+    if (page < totalPages - 2) pages.push("...");
+    pages.push(totalPages);
+    return pages;
+  }
 
-  const totalRows = Math.ceil(total / COLS);
+  const startItem = (page - 1) * PER_PAGE + 1;
+  const endItem = Math.min(page * PER_PAGE, total);
 
   return (
     <div className="grid gap-6 lg:grid-cols-[240px_1fr]">
@@ -247,6 +212,7 @@ export function ExploreClient({
 
       {/* ---------- Results ---------- */}
       <section>
+        {/* Header bar */}
         <div className="mb-4 flex items-center justify-between gap-3">
           <p className="text-sm text-ink-soft">
             {activeCategory && (
@@ -256,7 +222,7 @@ export function ExploreClient({
             )}
             {loading
               ? "Loading…"
-              : `${total.toLocaleString()} prompts`}
+              : `${total.toLocaleString()} prompts · showing ${startItem.toLocaleString()}–${endItem.toLocaleString()}`}
           </p>
           <label className="flex items-center gap-2 text-sm">
             <span className="text-ink-mute">Sort</span>
@@ -274,12 +240,12 @@ export function ExploreClient({
           </label>
         </div>
 
-        {loading && results.length === 0 ? (
-          <div className="flex items-center justify-center py-20">
-            <div className="flex items-center gap-3 text-ink-soft">
-              <span className="inline-block h-5 w-5 animate-spin rounded-full border-2 border-cyan border-t-transparent" />
-              <span className="text-sm">Loading prompts…</span>
-            </div>
+        {/* Prompt grid */}
+        {loading ? (
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+            {Array.from({ length: 12 }).map((_, i) => (
+              <div key={i} className="h-44 animate-pulse rounded-xl2 bg-cyan-soft/50" />
+            ))}
           </div>
         ) : results.length === 0 ? (
           <div className="card flex flex-col items-center p-10 text-center">
@@ -294,72 +260,63 @@ export function ExploreClient({
             </p>
           </div>
         ) : (
-          <>
-            {/* Virtualized grid — only renders visible rows */}
-            <div
-              ref={parentRef}
-              className="overflow-auto"
-              style={{ height: "calc(100vh - 200px)" }}
-            >
-              <div
-                className="relative w-full"
-                style={{ height: `${totalRows * 240}px` }}
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+            {results.map((r) => (
+              <PromptCard key={r.prompt.id} prompt={r.prompt} />
+            ))}
+          </div>
+        )}
+
+        {/* ---------- Pagination ---------- */}
+        {totalPages > 1 && (
+          <nav className="mt-8 flex flex-col items-center gap-3" aria-label="Pagination">
+            {/* Prev / Next buttons */}
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => goToPage(page - 1)}
+                disabled={page === 1 || loading}
+                className="btn-secondary disabled:opacity-30"
               >
-                <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-                  {virtualRows.map((vr) => {
-                    const rowIndex = vr.index;
-                    const prompt = promptByIndex.get(rowIndex);
-                    if (!prompt) {
-                      // Not loaded yet — show a subtle placeholder
-                      return (
-                        <div
-                          key={`placeholder-${rowIndex}`}
-                          className="h-[210px] animate-pulse rounded-xl2 bg-cyan-soft/30"
-                        />
-                      );
-                    }
-                    return (
-                      <div key={prompt.prompt.id}>
-                        <PromptCard prompt={prompt.prompt} />
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
+                ← Previous
+              </button>
+              <span className="px-3 font-mono text-sm text-ink-soft">
+                Page {page} of {totalPages.toLocaleString()}
+              </span>
+              <button
+                onClick={() => goToPage(page + 1)}
+                disabled={page === totalPages || loading}
+                className="btn-secondary disabled:opacity-30"
+              >
+                Next →
+              </button>
             </div>
 
-            {/* Loading indicator */}
-            {loadingMore && (
-              <div className="flex items-center justify-center gap-2 py-4 text-sm text-ink-soft">
-                <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-cyan border-t-transparent" />
-                Loading more…
-              </div>
-            )}
-            {!loadingMore && !hasMore && results.length > 0 && (
-              <p className="py-4 text-center text-xs text-ink-mute">
-                All {total.toLocaleString()} prompts loaded
-              </p>
-            )}
-          </>
+            {/* Page number buttons */}
+            <div className="flex flex-wrap items-center gap-1">
+              {pageNumbers().map((p, i) =>
+                p === "..." ? (
+                  <span key={`e${i}`} className="px-2 text-ink-mute">
+                    …
+                  </span>
+                ) : (
+                  <button
+                    key={p}
+                    onClick={() => goToPage(p)}
+                    disabled={loading}
+                    className={`h-8 min-w-[2rem] rounded-lg px-2 text-sm font-medium transition-colors ${
+                      p === page
+                        ? "bg-cyan text-white shadow-glow"
+                        : "bg-white text-ink-soft ring-1 ring-ink/10 hover:bg-cyan-soft/60"
+                    }`}
+                  >
+                    {p}
+                  </button>
+                ),
+              )}
+            </div>
+          </nav>
         )}
       </section>
-
-      {/* ---------- Back to top ---------- */}
-      {showTop && (
-        <button
-          onClick={() => {
-            parentRef.current?.scrollTo({ top: 0, behavior: "smooth" });
-            window.scrollTo({ top: 0, behavior: "smooth" });
-          }}
-          className="fixed bottom-6 right-6 z-50 grid h-10 w-10 place-items-center rounded-full bg-cyan text-white shadow-glow transition-all hover:-translate-y-0.5 hover:brightness-110 active:scale-95"
-          aria-label="Back to top"
-          style={{ animation: "fade-in 0.2s ease both" }}
-        >
-          <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M5 15l7-7 7 7" />
-          </svg>
-        </button>
-      )}
     </div>
   );
 }
