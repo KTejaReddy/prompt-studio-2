@@ -135,6 +135,14 @@ const LIGHT_COLS = PROMPT_COLS.split(",")
   .filter((c) => !"prompt_text variables platform_adaptations".split(" ").includes(c))
   .join(", ");
 
+/** Minimal columns for browse/card views - excludes all heavy text fields. */
+const BROWSE_COLS = [
+  "id", "title", "description", "category", "subcategory", "tasks",
+  "tags", "difficulty", "input_type", "output_type", "best_for",
+  "platforms", "quality_score", "usage_count", "rating",
+  "rating_count", "author", "status", "source", "is_featured",
+  "created_at", "updated_at",
+].join(", ");
 function rowToLight(r: PromptRow): PromptRecord {
   const rec = rowToPrompt(r);
   rec.promptText = "";
@@ -250,7 +258,7 @@ export const promptRepo = {
     full?: boolean;
   }): Promise<PromptRecord[]> {
     const limit = Math.min(Math.max(opts.limit ?? 1200, 1), 5000);
-    const cols = opts.full ? PROMPT_COLS : LIGHT_COLS;
+    const cols = opts.full ? PROMPT_COLS : BROWSE_COLS;
     const mapFn = opts.full
       ? (rows: PromptRow[]) => rows.map(rowToPrompt)
       : (rows: PromptRow[]) => rows.map(rowToLight);
@@ -293,7 +301,7 @@ export const promptRepo = {
       );
       if (idRows.length === 0) return [];
       // Use lightweight columns for candidate hydration — full text loaded later for top results only
-      const fetchCols = LIGHT_COLS;
+      const fetchCols = BROWSE_COLS;
       const rows: PromptRow[] = [];
       for (let i = 0; i < idRows.length; i += 500) {
         const chunk = idRows.slice(i, i + 500).map((r) => r.id);
