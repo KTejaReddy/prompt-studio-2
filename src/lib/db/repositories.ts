@@ -362,7 +362,7 @@ export const promptRepo = {
       for (const pl of opts.platform) params.push(`%"${pl}"%`);
     }
     const order = SORT_ORDERS[opts.sort ?? "popular"];
-    const sql = `SELECT ${BROWSE_COLS} FROM prompts WHERE ${where.join(" AND ")} ORDER BY ${order} LIMIT ${limit}`;
+    const sql = `SELECT ${BROWSE_COLS} FROM prompts p WHERE ${where.join(" AND ")} ORDER BY ${order} LIMIT ${limit}`;
     const rows = await query<PromptRow>(sql, ...params);
     return rows.map(rowToLight);
   },
