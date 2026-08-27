@@ -433,10 +433,10 @@ export const promptRepo = {
       }
     }
 
-    // Fallback: direct query on prompts table
+    // Fallback: direct query on prompts table — skip ORDER BY to avoid
+    // slow full-table sorts on Turso. Results are unordered but fast.
     const { where, params } = this.buildBrowseWhere(opts);
-    const order = SORT_ORDERS[sortKey];
-    const sql = `SELECT ${BROWSE_COLS} FROM prompts p WHERE ${where.join(' AND ')} ORDER BY ${order} LIMIT ${limit} OFFSET ${offset}`;
+    const sql = `SELECT ${BROWSE_COLS} FROM prompts p WHERE ${where.join(' AND ')} LIMIT ${limit} OFFSET ${offset}`;
     const rows = await query<PromptRow>(sql, ...params);
     return rows.map(rowToLight);
   },
