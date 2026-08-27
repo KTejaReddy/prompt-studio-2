@@ -9,11 +9,14 @@ export const dynamic = "force-dynamic";
 
 export default async function HomePage() {
   await ensureSeeded();
-  const categories = await listCategories();
-  const counts = await promptRepo.countsByCategory();
-  const featured = await promptRepo.featured(2);
-  const trending = await promptRepo.trending(8);
-  const recent = await promptRepo.recent(4);
+  // Parallelize all DB queries for faster page load
+  const [categories, counts, featured, trending, recent] = await Promise.all([
+    listCategories(),
+    promptRepo.countsByCategory(),
+    promptRepo.featured(2),
+    promptRepo.trending(8),
+    promptRepo.recent(4),
+  ]);
   const totalPrompts = Object.values(counts).reduce((a, b) => a + b, 0);
 
   return (

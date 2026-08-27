@@ -18,6 +18,7 @@ const TURSO_TOKEN = process.env.TURSO_AUTH_TOKEN;
 declare global {
   // eslint-disable-next-line no-var
   var __promptlyClient: Client | undefined;
+  var __promptlySeeded: boolean | undefined;
 }
 
 function createDbClient(): Client {
@@ -38,14 +39,21 @@ function getClient(): Client {
   return globalThis.__promptlyClient;
 }
 
-/** Check if the database has been seeded; if not, run the seed. */
+/**
+ * Check if the database has been seeded; if not, run the seed.
+ * Caches the result per serverless instance so subsequent requests skip the COUNT query.
+ */
 export async function ensureSeeded(): Promise<void> {
+  if (globalThis.__promptlySeeded) return;
   const client = getClient();
   const row = await client.execute("SELECT COUNT(*) AS n FROM prompts");
   const count = Number(row.rows[0]?.n ?? 0);
-  if (count === 0) {
-    await seedDatabase(client);
+  if (count > 0) {
+    globalThis.__promptlySeeded = true;
+    return;
   }
+  await seedDatabase(client);
+  globalThis.__promptlySeeded = true;
 }
 
 /**
