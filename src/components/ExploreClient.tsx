@@ -11,7 +11,7 @@ import type {
 import { PromptCard } from "@/components/PromptCard";
 
 const DIFFICULTIES: Difficulty[] = ["beginner", "intermediate", "advanced"];
-const PAGE_SIZE = 200;
+const PAGE_SIZE = 48;
 
 const SORTS = [
   { id: "relevance", label: "Relevance" },
@@ -136,7 +136,7 @@ export function ExploreClient({
     count: total,
     getScrollElement: () => parentRef.current,
     estimateSize: () => 220, // approximate card height in px
-    overscan: 6, // render 6 extra rows above/below viewport
+    overscan: 10, // render 10 extra rows above/below viewport for smoother scrolling
   });
 
   // Map virtual row index → prompt data (filled as pages load)
@@ -153,7 +153,7 @@ export function ExploreClient({
     const lastVirtual = virtualRows[virtualRows.length - 1];
     if (!lastVirtual) return;
     // When user scrolls within 3 rows of the end, fetch more
-    if (lastVirtual.index >= results.length - COLS * 3 && hasMore && !loadingMore && !loading) {
+    if (lastVirtual.index >= results.length - COLS * 5 && hasMore && !loadingMore && !loading) {
       fetchPage(offsetRef.current, true);
     }
   }, [virtualRows, results.length, hasMore, loadingMore, loading, fetchPage]);
