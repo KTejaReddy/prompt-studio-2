@@ -5,6 +5,7 @@ import { eventRepo } from "@/lib/db/repositories";
 import { ensureSeeded } from "@/lib/db/connection";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 /** Short-lived cache for non-personalised search results. */
 const CACHE_HEADER = {
