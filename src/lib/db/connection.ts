@@ -18,7 +18,12 @@ const TURSO_TOKEN = process.env.TURSO_AUTH_TOKEN;
 declare global {
   // eslint-disable-next-line no-var
   var __promptlyClient: Client | undefined;
+  // eslint-disable-next-line no-var
   var __promptlySeeded: boolean | undefined;
+  // eslint-disable-next-line no-var
+  var __browseIndexReady: boolean | undefined;
+  // eslint-disable-next-line no-var
+  var __browseIndexBuilding: boolean | undefined;
 }
 
 function createDbClient(): Client {
@@ -39,23 +44,52 @@ function getClient(): Client {
   return globalThis.__promptlyClient;
 }
 
+/** Apply performance pragmas on first connection. */
+let pragmasApplied = false;
+async function applyPragmas(client: Client): Promise<void> {
+  if (pragmasApplied) return;
+  try {
+    await client.execute('PRAGMA synchronous=NORMAL');
+    await client.execute('PRAGMA journal_mode=WAL');
+    await client.execute('PRAGMA cache_size=-64000'); // 64MB page cache
+    pragmasApplied = true;
+  } catch {
+    // Pragmas are best-effort; remote Turso may not support all of them.
+  }
+}
+
 /**
  * Check if the database has been seeded; if not, run the seed.
  * Caches the result per serverless instance so subsequent requests skip the COUNT query.
  */
 export async function ensureSeeded(): Promise<void> {
   if (globalThis.__promptlySeeded) return;
-  // Use sqlite_master as a zero-row heuristic — much cheaper than COUNT(*) on 220k rows.
   const client = getClient();
+  await applyPragmas(client);
+  // Use sqlite_master as a zero-row heuristic — much cheaper than COUNT(*) on 220k rows.
   const table = await client.execute(
     "SELECT 1 FROM sqlite_master WHERE type='table' AND name='prompts' LIMIT 1",
   );
-  if (table.rows.length > 0) {
-    globalThis.__promptlySeeded = true;
-    return;
+  if (table.rows.length === 0) {
+    // No prompts table → full seed needed
+    await seedDatabase(client);
   }
-  await seedDatabase(client);
   globalThis.__promptlySeeded = true;
+  // Ensure browse_index exists — build in background if missing (takes minutes on Turso)
+  if (!globalThis.__browseIndexReady) {
+    const idxExists = await client.execute(
+      "SELECT 1 FROM sqlite_master WHERE type='table' AND name='browse_index' LIMIT 1",
+    );
+    if (idxExists.rows.length > 0) {
+      globalThis.__browseIndexReady = true;
+    } else if (!globalThis.__browseIndexBuilding) {
+      globalThis.__browseIndexBuilding = true;
+      import('./buildBrowseIndex')
+        .then(({ buildBrowseIndex }) => buildBrowseIndex(client))
+        .then(() => { globalThis.__browseIndexReady = true; })
+        .catch((e) => { console.error('[db] browse_index build failed:', e); globalThis.__browseIndexBuilding = false; });
+    }
+  }
 }
 
 /**

@@ -24,7 +24,6 @@ const LEVELS: { level: Level; name: string; hint: string }[] = [
   },
 ];
 
-// Each depth level owns an accent — cyan-led, with cool variety.
 const LEVEL_ACCENT: Record<Level, { ring: string; badge: string }> = {
   1: { ring: "ring-2 ring-cyan-light shadow-glow", badge: "bg-gradient-explore" },
   2: { ring: "ring-2 ring-cyan shadow-glow", badge: "bg-gradient-find" },
@@ -55,6 +54,8 @@ export function GeneratorStudio() {
   const [level, setLevel] = useState<Level>(2);
   const [platforms, setPlatforms] = useState<{ id: string; name: string }[]>([]);
   const [loading, setLoading] = useState(false);
+  const [modelsLoading, setModelsLoading] = useState(true);
+  const [modelsError, setModelsError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<Generated | null>(null);
   const [copied, setCopied] = useState(false);
@@ -63,15 +64,36 @@ export function GeneratorStudio() {
   useEffect(() => {
     const prefill = params.get("ask");
     if (prefill) setAsk(prefill);
+
+    setModelsLoading(true);
+    setModelsError(null);
+
     fetch("/api/generate")
-      .then((r) => r.json())
-      .then((d) => {
+      .then(async (r) => {
+        const d = await r.json();
+        if (d.configured === false) {
+          setModelsError("AI generation requires a GROQ_API_KEY. Add it to .env.local and restart the server.");
+          setModelsLoading(false);
+          return;
+        }
+        if (d.error) {
+          setModelsError(d.error);
+          setModelsLoading(false);
+          return;
+        }
         if (Array.isArray(d.models) && d.models.length) {
           setModels(d.models);
           setModel(d.models[0].id);
+        } else {
+          setModelsError("No AI models available. Check GROQ_API_KEY configuration.");
         }
+        setModelsLoading(false);
       })
-      .catch(() => {});
+      .catch((e) => {
+        setModelsError(`Failed to load AI models: ${e instanceof Error ? e.message : "network error"}`);
+        setModelsLoading(false);
+      });
+
     fetch("/api/taxonomy")
       .then((r) => r.json())
       .then((d) => setPlatforms(d.platforms ?? []))
@@ -126,19 +148,28 @@ export function GeneratorStudio() {
         />
 
         <div className="mt-4 grid gap-3 sm:grid-cols-[1fr_200px_auto]">
-          <select
-            value={model}
-            onChange={(e) => setModel(e.target.value)}
-            className="rounded-xl border-0 bg-white px-3 py-2.5 text-sm text-ink ring-1 ring-ink/10 outline-none focus:ring-2 focus:ring-cyan"
-            aria-label="AI model"
-          >
-            {models.map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.label} — {m.blurb}
-              </option>
-            ))}
-            {!models.length && <option value="">Loading models…</option>}
-          </select>
+          <div className="relative">
+            <select
+              value={model}
+              onChange={(e) => setModel(e.target.value)}
+              disabled={modelsLoading || !!modelsError}
+              className="w-full rounded-xl border-0 bg-white px-3 py-2.5 text-sm text-ink ring-1 ring-ink/10 outline-none focus:ring-2 focus:ring-cyan disabled:opacity-50"
+              aria-label="AI model"
+            >
+              {models.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.label} — {m.blurb}
+                </option>
+              ))}
+              {modelsLoading && <option value="">Loading models…</option>}
+              {!modelsLoading && !models.length && <option value="">No models available</option>}
+            </select>
+            {modelsLoading && (
+              <span className="absolute right-3 top-1/2 -translate-y-1/2">
+                <span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-cyan/40 border-t-cyan" />
+              </span>
+            )}
+          </div>
 
           <select
             value={platform}
@@ -156,14 +187,21 @@ export function GeneratorStudio() {
 
           <button
             onClick={generate}
-            disabled={loading || ask.trim().length < 8 || !model}
+            disabled={loading || ask.trim().length < 8 || !model || modelsLoading}
             className="btn-generate disabled:opacity-50"
           >
             {loading ? "Generating…" : "Generate prompt"}
           </button>
         </div>
 
-        {/* Detail level — three colorful controls */}
+        {/* Models loading error */}
+        {modelsError && (
+          <p className="mt-3 rounded-xl bg-coral-soft px-4 py-3 text-sm font-semibold text-coral-deep">
+            {modelsError}
+          </p>
+        )}
+
+        {/* Detail level */}
         <div className="mt-4">
           <p className="mb-2 text-xs font-bold uppercase tracking-wide text-ink-mute">
             Prompt depth
@@ -175,7 +213,8 @@ export function GeneratorStudio() {
                 type="button"
                 onClick={() => setLevel(l)}
                 className={`rounded-xl bg-white px-4 py-3 text-left transition-all ${
-                  level === l                    ? LEVEL_ACCENT[l].ring : "ring-1 ring-ink/10 hover:bg-cyan-soft/40"
+                  level === l
+                    ? LEVEL_ACCENT[l].ring : "ring-1 ring-ink/10 hover:bg-cyan-soft/40"
                 }`}
               >
                 <span className="flex items-center gap-2">
@@ -273,7 +312,6 @@ export function GeneratorStudio() {
             </div>
           )}
 
-          {/* Light editor surface with colored variable highlights (§12) */}
           <pre className="max-h-[28rem] overflow-y-auto whitespace-pre-wrap rounded-xl bg-paper-soft p-5 font-body text-sm leading-relaxed ring-1 ring-cyan/20">
             {tokenize(result.body).map((seg, i) =>
               seg.variable ? (

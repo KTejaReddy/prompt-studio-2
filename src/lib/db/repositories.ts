@@ -361,22 +361,48 @@ export const promptRepo = {
     return { where, params };
   },
 
-  /** Count published prompts matching browse filters. Cached 60s. */
+  /** Count published prompts matching browse filters. Uses cached totals when possible. */
   async countBrowse(opts: {
     category?: string;
     difficulty?: string[];
     platform?: string[];
   } = {}): Promise<number> {
+    // Fast path: no filters → use the pre-computed total
+    if (!opts.category && !opts.difficulty?.length && !opts.platform?.length) {
+      const key = 'countBrowse:all';
+      return cached(key, 300_000, async () => {
+        const row = await queryOne<{ total: number }>(
+          `SELECT total FROM browse_totals WHERE filter_key = 'all'`,
+        );
+        return Number(row?.total ?? 0);
+      });
+    }
+    // Category-only filter → use cached category total
+    if (opts.category && !opts.difficulty?.length && !opts.platform?.length) {
+      const key = `countBrowse:${opts.category}`;
+      return cached(key, 300_000, async () => {
+        const row = await queryOne<{ total: number }>(
+          `SELECT total FROM browse_totals WHERE filter_key = ?`,
+          `cat:${opts.category}`,
+        );
+        return Number(row?.total ?? 0);
+      });
+    }
+    // Fallback: filtered browse → count from browse_index
     const key = `countBrowse:${JSON.stringify(opts)}`;
     return cached(key, 60_000, async () => {
       const { where, params } = this.buildBrowseWhere(opts);
-      const sql = `SELECT COUNT(*) AS n FROM prompts p WHERE ${where.join(" AND ")}`;
+      const sql = `SELECT COUNT(*) AS n FROM prompts p WHERE ${where.join(' AND ')}`;
       const row = await queryOne<{ n: number }>(sql, ...params);
       return Number(row?.n ?? 0);
     });
   },
 
-  /** Lightweight browse — no heavy text fields, no FTS, no scoring. */
+  /**
+   * Lightweight browse using the pre-sorted browse_index table.
+   * Reads sorted IDs from the small index table (fast), then hydrates
+   * only the requested page from the prompts table.
+   */
   async browse(opts: {
     category?: string;
     difficulty?: string[];
@@ -387,9 +413,37 @@ export const promptRepo = {
   } = {}): Promise<PromptRecord[]> {
     const limit = Math.min(opts.limit ?? 48, 200);
     const offset = Math.max(opts.offset ?? 0, 0);
+    const sortKey = opts.sort ?? 'popular';
+
+    // Fast path: no difficulty/platform filter → use browse_index
+    if (!opts.difficulty?.length && !opts.platform?.length) {
+      try {
+        const indexWhere = ['sort_key = ?'];
+        const indexParams: (string | number)[] = [sortKey];
+        if (opts.category) {
+          indexWhere.push('category = ?');
+          indexParams.push(opts.category);
+        }
+        const sql = `SELECT prompt_id FROM browse_index WHERE ${indexWhere.join(' AND ')} ORDER BY position LIMIT ${limit} OFFSET ${offset}`;
+        const ids = await query<{ prompt_id: string }>(sql, ...indexParams);
+        if (ids.length === 0) return [];
+
+        // Hydrate the prompts from the main table
+        const placeholders = ids.map(() => '?').join(',');
+        const promptSql = `SELECT ${BROWSE_COLS} FROM prompts WHERE id IN (${placeholders}) AND status = 'published'`;
+        const rows = await query<PromptRow>(promptSql, ...ids.map((r) => r.prompt_id));
+        // Preserve the sort order from browse_index
+        const byId = new Map(rows.map((r) => [r.id, r]));
+        return ids.map((r) => byId.get(r.prompt_id)).filter(Boolean).map((r) => rowToLight(r!));
+      } catch {
+        // browse_index not ready yet — fall through to direct query
+      }
+    }
+
+    // Fallback: direct query on prompts table
     const { where, params } = this.buildBrowseWhere(opts);
-    const order = SORT_ORDERS[opts.sort ?? "popular"];
-    const sql = `SELECT ${BROWSE_COLS} FROM prompts p WHERE ${where.join(" AND ")} ORDER BY ${order} LIMIT ${limit} OFFSET ${offset}`;
+    const order = SORT_ORDERS[sortKey];
+    const sql = `SELECT ${BROWSE_COLS} FROM prompts p WHERE ${where.join(' AND ')} ORDER BY ${order} LIMIT ${limit} OFFSET ${offset}`;
     const rows = await query<PromptRow>(sql, ...params);
     return rows.map(rowToLight);
   },

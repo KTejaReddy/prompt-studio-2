@@ -111,4 +111,23 @@ CREATE TABLE IF NOT EXISTS events (
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_events_type ON events(type, created_at DESC);
+
+-- Pre-sorted browse index: avoids expensive ORDER BY on 220k rows.
+-- Each row maps a sort order + position → prompt_id for fast OFFSET queries.
+CREATE TABLE IF NOT EXISTS browse_index (
+  sort_key TEXT NOT NULL,
+  position INTEGER NOT NULL,
+  prompt_id TEXT NOT NULL,
+  category TEXT NOT NULL DEFAULT '',
+  difficulty TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (sort_key, position)
+);
+CREATE INDEX IF NOT EXISTS idx_browse_cat ON browse_index(sort_key, category, position);
+
+-- Cached total count per category (avoids COUNT(*) on every browse).
+CREATE TABLE IF NOT EXISTS browse_totals (
+  filter_key TEXT PRIMARY KEY,
+  total INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL
+);
 `;

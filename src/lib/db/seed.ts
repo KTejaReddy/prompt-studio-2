@@ -238,6 +238,10 @@ export async function seedDatabase(client: Client): Promise<void> {
     args: [],
   });
 
+  // Build browse_index — pre-sorted position maps for fast OFFSET queries.
+  const { buildBrowseIndex } = await import('./buildBrowseIndex');
+  await buildBrowseIndex(client);
+
   console.log(
     `[db] Seeded ${ALL_SEED_PROMPTS.length} curated + ${target.toLocaleString()} generated prompts, ${SEED_WORKFLOWS.length} workflows, ${SEED_CATEGORIES.length} categories`,
   );
