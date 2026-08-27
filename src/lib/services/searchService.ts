@@ -172,6 +172,29 @@ export async function searchPrompts(
   const intent =
     typeof queryOrIntent === "string" ? parseIntent(queryOrIntent) : queryOrIntent;
 
+  // Fast path: no query → return top prompts directly (browse mode)
+  const hasQuery = intent.rawQuery.trim().length > 0;
+  if (!hasQuery) {
+    const limit = opts.limit ?? MATCH_CONFIG.search.topK;
+    const sort = opts.sort ?? "popular";
+    const prompts = await promptRepo.candidatesFor({
+      tokens: [],
+      filters: opts.filters,
+      sort,
+      limit: Math.min(limit * 3, 100),
+      full: false,
+    });
+    const results: ScoredPrompt[] = prompts.map((p) => ({
+      prompt: p,
+      score: p.qualityScore,
+      semantic: 0,
+      keyword: 0,
+      structured: 0,
+      reasons: [],
+    }));
+    return { results: results.slice(0, limit), intent };
+  }
+
   await ensureSemanticEngine();
 
   const candidates = await promptRepo.candidatesFor({

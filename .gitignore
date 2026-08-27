@@ -16,3 +16,7 @@ shots/
 tests/
 
 .vercel
+auth*
+db
+db-wal
+auth-wal

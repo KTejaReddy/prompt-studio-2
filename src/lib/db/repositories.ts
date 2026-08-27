@@ -286,17 +286,19 @@ export const promptRepo = {
 
     if (tokens.length > 0 && (await ftsAvailable())) {
       const match = tokens.map((t) => `"${t.replace(/"/g, "")}"`).join(" OR ");
-      const poolCap = Math.min(Math.max(limit * 4, 4000), 8000);
+      const poolCap = Math.min(Math.max(limit * 2, 2000), 4000);
       const idRows = await query<{ id: string }>(
         `SELECT id FROM prompts_fts WHERE prompts_fts MATCH ? LIMIT ${poolCap}`,
         match,
       );
       if (idRows.length === 0) return [];
+      // Use lightweight columns for candidate hydration — full text loaded later for top results only
+      const fetchCols = LIGHT_COLS;
       const rows: PromptRow[] = [];
       for (let i = 0; i < idRows.length; i += 500) {
         const chunk = idRows.slice(i, i + 500).map((r) => r.id);
         const chunkRows = await query<PromptRow>(
-          `SELECT ${cols} FROM prompts p WHERE p.id IN (${chunk.map(() => "?").join(",")})`,
+          `SELECT ${fetchCols} FROM prompts p WHERE p.id IN (${chunk.map(() => "?").join(",")})`,
           ...chunk,
         );
         rows.push(...chunkRows);
@@ -322,11 +324,11 @@ export const promptRepo = {
 
   async embeddingSample(limit = 6000): Promise<PromptRecord[]> {
     const rows = await query<PromptRow>(
-      `SELECT ${PROMPT_COLS} FROM prompts WHERE status = 'published'
+      `SELECT ${LIGHT_COLS} FROM prompts WHERE status = 'published'
        ORDER BY (source = 'seed') DESC, usage_count DESC LIMIT ?`,
       Math.min(limit, 20000),
     );
-    return rows.map(rowToPrompt);
+    return rows.map(rowToLight);
   },
 
   async insert(p: PromptRecord): Promise<void> {
