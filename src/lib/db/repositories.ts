@@ -419,15 +419,16 @@ export const promptRepo = {
         }
         const sql = `SELECT prompt_id FROM browse_index WHERE ${indexWhere.join(' AND ')} ORDER BY position LIMIT ${limit} OFFSET ${offset}`;
         const ids = await query<{ prompt_id: string }>(sql, ...indexParams);
-        if (ids.length === 0) return [];
-
-        // Hydrate the prompts from the main table
-        const placeholders = ids.map(() => '?').join(',');
-        const promptSql = `SELECT ${BROWSE_COLS} FROM prompts WHERE id IN (${placeholders}) AND status = 'published'`;
-        const rows = await query<PromptRow>(promptSql, ...ids.map((r) => r.prompt_id));
-        // Preserve the sort order from browse_index
-        const byId = new Map(rows.map((r) => [r.id, r]));
-        return ids.map((r) => byId.get(r.prompt_id)).filter(Boolean).map((r) => rowToLight(r!));
+        if (ids.length > 0) {
+          // Hydrate the prompts from the main table
+          const placeholders = ids.map(() => '?').join(',');
+          const promptSql = `SELECT ${BROWSE_COLS} FROM prompts WHERE id IN (${placeholders}) AND status = 'published'`;
+          const rows = await query<PromptRow>(promptSql, ...ids.map((r) => r.prompt_id));
+          // Preserve the sort order from browse_index
+          const byId = new Map(rows.map((r) => [r.id, r]));
+          return ids.map((r) => byId.get(r.prompt_id)).filter(Boolean).map((r) => rowToLight(r!));
+        }
+        // 0 results from index may mean it's incomplete — fall through to direct query
       } catch {
         // browse_index not ready yet — fall through to direct query
       }
