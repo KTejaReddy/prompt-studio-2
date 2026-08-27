@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import type {
   CategoryRecord,
   Difficulty,
@@ -10,7 +11,7 @@ import type {
 import { PromptCard } from "@/components/PromptCard";
 
 const DIFFICULTIES: Difficulty[] = ["beginner", "intermediate", "advanced"];
-const PAGE_SIZE = 48;
+const PAGE_SIZE = 200;
 
 const SORTS = [
   { id: "relevance", label: "Relevance" },
@@ -19,31 +20,6 @@ const SORTS = [
   { id: "recent", label: "Newest" },
   { id: "quality", label: "Quality" },
 ] as const;
-
-/** Stagger delay per card index for smooth fade-in. */
-function staggerStyle(index: number, baseDelay = 40): React.CSSProperties {
-  return {
-    animation: `fade-up 0.35s cubic-bezier(0.21,0.61,0.35,1) ${index * baseDelay}ms both`,
-  };
-}
-
-function SkeletonCard() {
-  return (
-    <div className="animate-pulse rounded-xl2 bg-white p-4 ring-1 ring-ink/5 shadow-soft">
-      <div className="mb-3 h-5 w-24 rounded-full bg-cyan-soft/60" />
-      <div className="mb-2 h-5 w-3/4 rounded bg-paper-deep" />
-      <div className="space-y-1.5">
-        <div className="h-3 w-full rounded bg-blush" />
-        <div className="h-3 w-5/6 rounded bg-blush" />
-      </div>
-      <div className="mt-4 flex items-center gap-2">
-        <div className="h-5 w-16 rounded-full bg-mint-soft/50" />
-        <div className="h-3 w-10 rounded bg-blush" />
-        <div className="h-3 w-14 rounded bg-blush" />
-      </div>
-    </div>
-  );
-}
 
 export function ExploreClient({
   initialQuery,
@@ -76,8 +52,7 @@ export function ExploreClient({
   const offsetRef = useRef(initialResults.length);
   const abortRef = useRef<AbortController | null>(null);
   const isInitialMount = useRef(true);
-  const sentinelRef = useRef<HTMLDivElement | null>(null);
-  const initialCountRef = useRef(initialResults.length);
+  const parentRef = useRef<HTMLDivElement>(null);
 
   // Debounce the search box.
   useEffect(() => {
@@ -145,22 +120,6 @@ export function ExploreClient({
     return () => abortRef.current?.abort();
   }, [fetchPage, initialQuery, initialCategory]);
 
-  // Infinite scroll — observe sentinel
-  useEffect(() => {
-    const el = sentinelRef.current;
-    if (!el) return;
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries[0]?.isIntersecting && hasMore && !loading && !loadingMore) {
-          fetchPage(offsetRef.current, true);
-        }
-      },
-      { rootMargin: "400px" },
-    );
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, [hasMore, loading, loadingMore, fetchPage]);
-
   function toggle<T>(list: T[], v: T, set: (l: T[]) => void) {
     set(list.includes(v) ? list.filter((x) => x !== v) : [...list, v]);
   }
@@ -170,8 +129,36 @@ export function ExploreClient({
     [categories, category],
   );
 
-  /** How many skeleton cards to show in the loading-more grid */
-  const skeletonCount = 6;
+  // --- Virtualization ---
+  const COLS = 3; // xl:grid-cols-3
+
+  const rowVirtualizer = useVirtualizer({
+    count: total,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => 220, // approximate card height in px
+    overscan: 6, // render 6 extra rows above/below viewport
+  });
+
+  // Map virtual row index → prompt data (filled as pages load)
+  const promptByIndex = useMemo(() => {
+    const map = new Map<number, ScoredPrompt>();
+    results.forEach((r, i) => map.set(i, r));
+    return map;
+  }, [results]);
+
+  const virtualRows = rowVirtualizer.getVirtualItems();
+
+  // Pre-fetch next page when user scrolls near the end
+  useEffect(() => {
+    const lastVirtual = virtualRows[virtualRows.length - 1];
+    if (!lastVirtual) return;
+    // When user scrolls within 3 rows of the end, fetch more
+    if (lastVirtual.index >= results.length - COLS * 3 && hasMore && !loadingMore && !loading) {
+      fetchPage(offsetRef.current, true);
+    }
+  }, [virtualRows, results.length, hasMore, loadingMore, loading, fetchPage]);
+
+  const totalRows = Math.ceil(total / COLS);
 
   return (
     <div className="grid gap-6 lg:grid-cols-[240px_1fr]">
@@ -268,7 +255,7 @@ export function ExploreClient({
               </>
             )}
             {loading
-              ? "Searching…"
+              ? "Loading…"
               : `${total.toLocaleString()} prompts`}
           </p>
           <label className="flex items-center gap-2 text-sm">
@@ -287,11 +274,12 @@ export function ExploreClient({
           </label>
         </div>
 
-        {loading ? (
-          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-            {Array.from({ length: 9 }).map((_, i) => (
-              <SkeletonCard key={i} />
-            ))}
+        {loading && results.length === 0 ? (
+          <div className="flex items-center justify-center py-20">
+            <div className="flex items-center gap-3 text-ink-soft">
+              <span className="inline-block h-5 w-5 animate-spin rounded-full border-2 border-cyan border-t-transparent" />
+              <span className="text-sm">Loading prompts…</span>
+            </div>
           </div>
         ) : results.length === 0 ? (
           <div className="card flex flex-col items-center p-10 text-center">
@@ -307,45 +295,51 @@ export function ExploreClient({
           </div>
         ) : (
           <>
-            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-              {results.map((r, i) => (
-                <div
-                  key={r.prompt.id}
-                  style={i >= initialCountRef.current ? staggerStyle(i - initialCountRef.current) : undefined}
-                >
-                  <PromptCard
-                    prompt={r.prompt}
-                    score={debounced.trim() ? r.score : undefined}
-                    reasons={debounced.trim() ? r.reasons : undefined}
-                  />
+            {/* Virtualized grid — only renders visible rows */}
+            <div
+              ref={parentRef}
+              className="overflow-auto"
+              style={{ height: "calc(100vh - 200px)" }}
+            >
+              <div
+                className="relative w-full"
+                style={{ height: `${totalRows * 240}px` }}
+              >
+                <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+                  {virtualRows.map((vr) => {
+                    const rowIndex = vr.index;
+                    const prompt = promptByIndex.get(rowIndex);
+                    if (!prompt) {
+                      // Not loaded yet — show a subtle placeholder
+                      return (
+                        <div
+                          key={`placeholder-${rowIndex}`}
+                          className="h-[210px] animate-pulse rounded-xl2 bg-cyan-soft/30"
+                        />
+                      );
+                    }
+                    return (
+                      <div key={prompt.prompt.id}>
+                        <PromptCard prompt={prompt.prompt} />
+                      </div>
+                    );
+                  })}
                 </div>
-              ))}
-              {/* Skeleton cards while loading the next page */}
-              {loadingMore &&
-                Array.from({ length: skeletonCount }).map((_, i) => (
-                  <SkeletonCard key={`skel-${i}`} />
-                ))}
+              </div>
             </div>
 
-            {/* Infinite scroll sentinel + status */}
-            <div ref={sentinelRef} className="mt-6 flex justify-center">
-              {loadingMore && (
-                <div className="flex items-center gap-2 text-sm text-ink-soft">
-                  <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-cyan border-t-transparent" />
-                  Loading more…
-                </div>
-              )}
-              {!loadingMore && hasMore && (
-                <p className="text-xs text-ink-mute">
-                  Showing {results.length.toLocaleString()} of {total.toLocaleString()} — scroll for more
-                </p>
-              )}
-              {!hasMore && results.length > 0 && (
-                <p className="text-xs text-ink-mute">
-                  All {total.toLocaleString()} prompts loaded
-                </p>
-              )}
-            </div>
+            {/* Loading indicator */}
+            {loadingMore && (
+              <div className="flex items-center justify-center gap-2 py-4 text-sm text-ink-soft">
+                <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-cyan border-t-transparent" />
+                Loading more…
+              </div>
+            )}
+            {!loadingMore && !hasMore && results.length > 0 && (
+              <p className="py-4 text-center text-xs text-ink-mute">
+                All {total.toLocaleString()} prompts loaded
+              </p>
+            )}
           </>
         )}
       </section>
@@ -353,7 +347,10 @@ export function ExploreClient({
       {/* ---------- Back to top ---------- */}
       {showTop && (
         <button
-          onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
+          onClick={() => {
+            parentRef.current?.scrollTo({ top: 0, behavior: "smooth" });
+            window.scrollTo({ top: 0, behavior: "smooth" });
+          }}
           className="fixed bottom-6 right-6 z-50 grid h-10 w-10 place-items-center rounded-full bg-cyan text-white shadow-glow transition-all hover:-translate-y-0.5 hover:brightness-110 active:scale-95"
           aria-label="Back to top"
           style={{ animation: "fade-in 0.2s ease both" }}
