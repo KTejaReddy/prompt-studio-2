@@ -8,7 +8,7 @@ export const dynamic = "force-dynamic";
 
 /** Short-lived cache for non-personalised search results. */
 const CACHE_HEADER = {
-  "Cache-Control": "public, s-maxage=60, stale-while-revalidate=300",
+  "Cache-Control": "public, s-maxage=300, stale-while-revalidate=3600",
 } as const;
 
 function list(params: URLSearchParams, key: string): string[] | undefined {

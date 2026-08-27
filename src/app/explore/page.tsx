@@ -4,7 +4,7 @@ import { listCategories, listPlatforms } from "@/lib/db/repositories";
 import { ensureSeeded } from "@/lib/db/connection";
 import type { ScoredPrompt } from "@/lib/types";
 
-export const dynamic = "force-dynamic";
+export const revalidate = 300; // ISR: revalidate every 5 minutes
 export const metadata = { title: "Explore" };
 
 export default async function ExplorePage({

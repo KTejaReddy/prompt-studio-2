@@ -20,10 +20,6 @@ declare global {
   var __promptlyClient: Client | undefined;
   // eslint-disable-next-line no-var
   var __promptlySeeded: boolean | undefined;
-  // eslint-disable-next-line no-var
-  var __browseIndexReady: boolean | undefined;
-  // eslint-disable-next-line no-var
-  var __browseIndexBuilding: boolean | undefined;
 }
 
 function createDbClient(): Client {
@@ -66,29 +62,17 @@ export async function ensureSeeded(): Promise<void> {
   if (globalThis.__promptlySeeded) return;
   const client = getClient();
   await applyPragmas(client);
-  // Use sqlite_master as a zero-row heuristic — much cheaper than COUNT(*) on 220k rows.
-  const table = await client.execute(
-    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='prompts' LIMIT 1",
-  );
-  if (table.rows.length === 0) {
-    // No prompts table → full seed needed
-    await seedDatabase(client);
-  }
-  globalThis.__promptlySeeded = true;
-  // Ensure browse_index exists — build in background if missing (takes minutes on Turso)
-  if (!globalThis.__browseIndexReady) {
-    const idxExists = await client.execute(
-      "SELECT 1 FROM sqlite_master WHERE type='table' AND name='browse_index' LIMIT 1",
+  // On Turso (remote), skip the check — DB is already seeded. Only check locally.
+  if (TURSO_URL) {
+    globalThis.__promptlySeeded = true;
+  } else {
+    const table = await client.execute(
+      "SELECT 1 FROM sqlite_master WHERE type='table' AND name='prompts' LIMIT 1",
     );
-    if (idxExists.rows.length > 0) {
-      globalThis.__browseIndexReady = true;
-    } else if (!globalThis.__browseIndexBuilding) {
-      globalThis.__browseIndexBuilding = true;
-      import('./buildBrowseIndex')
-        .then(({ buildBrowseIndex }) => buildBrowseIndex(client))
-        .then(() => { globalThis.__browseIndexReady = true; })
-        .catch((e) => { console.error('[db] browse_index build failed:', e); globalThis.__browseIndexBuilding = false; });
+    if (table.rows.length === 0) {
+      await seedDatabase(client);
     }
+    globalThis.__promptlySeeded = true;
   }
 }
 

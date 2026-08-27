@@ -5,7 +5,7 @@ import { FindBar } from "@/components/FindBar";
 import { familyForCategory, FEATURED_ROTATION } from "@/lib/ui/categoryTheme";
 import { ensureSeeded } from "@/lib/db/connection";
 
-export const dynamic = "force-dynamic";
+export const revalidate = 300; // ISR: cache for 5 minutes
 
 export default async function HomePage() {
   await ensureSeeded();
