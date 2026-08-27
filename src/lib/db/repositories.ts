@@ -338,6 +338,34 @@ export const promptRepo = {
     );
     return rows.map(rowToLight);
   },
+  /** Lightweight browse — no heavy text fields, no FTS, no scoring. */
+  async browse(opts: {
+    category?: string;
+    difficulty?: string[];
+    platform?: string[];
+    sort?: SortOption;
+    limit?: number;
+  } = {}): Promise<PromptRecord[]> {
+    const limit = Math.min(opts.limit ?? 36, 100);
+    const where = ["status = 'published'"];
+    const params: (string | number)[] = [];
+    if (opts.category) {
+      where.push("category = ?");
+      params.push(opts.category);
+    }
+    if (opts.difficulty?.length) {
+      where.push(`difficulty IN (${opts.difficulty.map(() => "?").join(",")})`);
+      params.push(...opts.difficulty);
+    }
+    if (opts.platform?.length) {
+      where.push(`platforms LIKE ?`);
+      for (const pl of opts.platform) params.push(`%"${pl}"%`);
+    }
+    const order = SORT_ORDERS[opts.sort ?? "popular"];
+    const sql = `SELECT ${BROWSE_COLS} FROM prompts WHERE ${where.join(" AND ")} ORDER BY ${order} LIMIT ${limit}`;
+    const rows = await query<PromptRow>(sql, ...params);
+    return rows.map(rowToLight);
+  },
 
   async insert(p: PromptRecord): Promise<void> {
     await run(

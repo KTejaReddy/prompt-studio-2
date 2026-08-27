@@ -22,9 +22,15 @@ const SORTS = [
 export function ExploreClient({
   initialQuery,
   initialCategory,
+  initialResults,
+  initialCategories,
+  initialPlatforms,
 }: {
   initialQuery: string;
   initialCategory: string;
+  initialResults: ScoredPrompt[];
+  initialCategories: CategoryRecord[];
+  initialPlatforms: PlatformRecord[];
 }) {
   const [query, setQuery] = useState(initialQuery);
   const [debounced, setDebounced] = useState(initialQuery);
@@ -32,11 +38,12 @@ export function ExploreClient({
   const [difficulties, setDifficulties] = useState<Difficulty[]>([]);
   const [platforms, setPlatforms] = useState<string[]>([]);
   const [sort, setSort] = useState<(typeof SORTS)[number]["id"]>("relevance");
-  const [results, setResults] = useState<ScoredPrompt[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [categories, setCategories] = useState<CategoryRecord[]>([]);
-  const [platformList, setPlatformList] = useState<PlatformRecord[]>([]);
+  const [results, setResults] = useState<ScoredPrompt[]>(initialResults);
+  const [loading, setLoading] = useState(false);
+  const [categories] = useState<CategoryRecord[]>(initialCategories);
+  const [platformList] = useState<PlatformRecord[]>(initialPlatforms);
   const abortRef = useRef<AbortController | null>(null);
+  const isInitialMount = useRef(true);
 
   // Debounce the search box.
   useEffect(() => {
@@ -44,18 +51,14 @@ export function ExploreClient({
     return () => clearTimeout(t);
   }, [query]);
 
-  // Taxonomy for filters (fetched once).
-  useEffect(() => {
-    fetch("/api/taxonomy")
-      .then((r) => r.json())
-      .then((d) => {
-        setCategories(d.categories ?? []);
-        setPlatformList(d.platforms ?? []);
-      })
-      .catch(() => {});
-  }, []);
-
   const fetchResults = useCallback(async () => {
+    // Skip the very first fetch — server already provided results
+    if (isInitialMount.current) {
+      isInitialMount.current = false;
+      // If there's an initial query, we need to fetch results for it
+      if (!initialQuery.trim() && !initialCategory) return;
+    }
+
     abortRef.current?.abort();
     const ctrl = new AbortController();
     abortRef.current = ctrl;
@@ -76,7 +79,7 @@ export function ExploreClient({
     } finally {
       if (!ctrl.signal.aborted) setLoading(false);
     }
-  }, [debounced, category, difficulties, platforms, sort]);
+  }, [debounced, category, difficulties, platforms, sort, initialQuery, initialCategory]);
 
   useEffect(() => {
     void fetchResults();
