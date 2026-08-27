@@ -367,30 +367,23 @@ export const promptRepo = {
     difficulty?: string[];
     platform?: string[];
   } = {}): Promise<number> {
-    // Fast path: no filters → use the pre-computed total
-    if (!opts.category && !opts.difficulty?.length && !opts.platform?.length) {
-      const key = 'countBrowse:all';
-      return cached(key, 300_000, async () => {
-        const row = await queryOne<{ total: number }>(
-          `SELECT total FROM browse_totals WHERE filter_key = 'all'`,
-        );
-        return Number(row?.total ?? 0);
-      });
-    }
-    // Category-only filter → use cached category total
-    if (opts.category && !opts.difficulty?.length && !opts.platform?.length) {
-      const key = `countBrowse:${opts.category}`;
-      return cached(key, 300_000, async () => {
-        const row = await queryOne<{ total: number }>(
-          `SELECT total FROM browse_totals WHERE filter_key = ?`,
-          `cat:${opts.category}`,
-        );
-        return Number(row?.total ?? 0);
-      });
-    }
-    // Fallback: filtered browse → count from browse_index
-    const key = `countBrowse:${JSON.stringify(opts)}`;
-    return cached(key, 60_000, async () => {
+    // Try cached browse_totals first (fast), fall back to COUNT(*) if table missing
+    const cacheKey = `countBrowse:${opts.category ?? 'all'}:${opts.difficulty?.join(',') ?? ''}:${opts.platform?.join(',') ?? ''}`;
+    return cached(cacheKey, 300_000, async () => {
+      try {
+        // Fast path: use pre-computed totals if browse_totals exists
+        if (!opts.difficulty?.length && !opts.platform?.length) {
+          const filterKey = opts.category ? `cat:${opts.category}` : 'all';
+          const row = await queryOne<{ total: number }>(
+            `SELECT total FROM browse_totals WHERE filter_key = ?`,
+            filterKey,
+          );
+          if (row) return Number(row.total);
+        }
+      } catch {
+        // browse_totals table doesn't exist yet — fall through
+      }
+      // Fallback: COUNT(*) directly on prompts table
       const { where, params } = this.buildBrowseWhere(opts);
       const sql = `SELECT COUNT(*) AS n FROM prompts p WHERE ${where.join(' AND ')}`;
       const row = await queryOne<{ n: number }>(sql, ...params);

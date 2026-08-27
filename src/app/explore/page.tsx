@@ -17,16 +17,25 @@ export default async function ExplorePage({
   const category = searchParams.category ?? "";
 
   // Server-side: fetch initial results using the lightweight browse query
-  const [initialPrompts, totalCount, categories, platforms] = await Promise.all([
-    promptRepo.browse({
-      category: category || undefined,
-      sort: "popular",
-      limit: 48,
-    }),
-    promptRepo.countBrowse({ category: category || undefined }),
-    listCategories(),
-    listPlatforms(),
-  ]);
+  let initialPrompts: Awaited<ReturnType<typeof promptRepo.browse>> = [];
+  let totalCount = 0;
+  let categories: Awaited<ReturnType<typeof listCategories>> = [];
+  let platforms: Awaited<ReturnType<typeof listPlatforms>> = [];
+  try {
+    [initialPrompts, totalCount, categories, platforms] = await Promise.all([
+      promptRepo.browse({
+        category: category || undefined,
+        sort: "popular",
+        limit: 48,
+      }),
+      promptRepo.countBrowse({ category: category || undefined }),
+      listCategories(),
+      listPlatforms(),
+    ]);
+  } catch (e) {
+    console.error("[explore] Initial load error, showing empty state:", e);
+    // Page renders with empty results — client-side fetch will retry
+  }
 
   const initialResults: ScoredPrompt[] = initialPrompts.map((p) => ({
     prompt: p,
