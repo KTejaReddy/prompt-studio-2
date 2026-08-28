@@ -1,22 +1,53 @@
-node_modules
-.next
-out
-*.tsbuildinfo
-next-env.d.ts
-data/*.sqlite*
-.env*
+
+# General
 .DS_Store
+node_modules/
+venv/
+env/
+.env
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
 
-.big.log
-.run.log
-.wf.html
-.relcheck.mjs
-.freebuff/
-shots/
-tests/
+# Build / NextJS
+dist/
+build/
+.next/
+out/
+.vs/
+bin/
+obj/
+*.dll
 
-.vercel
-^/auth*
-^/db$
-^/db-wal$
-^/auth-wal$
+# Large Data
+*.csv
+*.db
+*.sqlite
+*.sqlite3
+*.db-wal
+*.db-shm
+*.log
+*.zip
+*.tar.gz
+*.tif
+*.r
+*.asm
+*.license
+*.pys
+
+# Unity Specific
+[Ll]ibrary/
+[Ll]ocalTempCache/
+[Oo]bj/
+[Ll]ogs/
+[Uu]serSettings/
+[Mm]emoryCaptures/
+[Bb]uilds/
+*.apk
+*.unitypackage
+*.a
+*.so
+*.dylib
+*.pdb
+*.mdb
